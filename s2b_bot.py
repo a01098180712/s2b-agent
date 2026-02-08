@@ -149,7 +149,6 @@ def enable_scroll(page):
             document.body.style.overflow = 'auto';
             document.body.style.height = 'auto';
         }""")
-        # print("    🔧 스크롤바 활성화 완료")
     except: pass
 
 def handle_post_upload_popup(context):
@@ -254,13 +253,59 @@ def register_base_info(page, product):
         print(f"    ❌ 기본 정보 입력 중 오류: {e}")
 
 def register_cert_info(context, page, product):
-    print("  🏆 인증 정보(KC/G2B) 처리 (v4.2: 모두 해당없음)...")
+    print("  🏆 인증 정보(KC/G2B) 처리 (v4.6: 팝업 처리 제거)...")
     try:
-        kcs = ['kids', 'elec', 'daily', 'broadcasting']
-        for kc in kcs:
-            try: page.click(f'input[name="{kc}KcUseGubunChk"][value="N"]')
-            except: pass
-        print("    ✅ 인증 정보 설정 완료 (KC: N / G2B: Skip)")
+        kc_map = [
+            ('kids', 'KC_어린이_번호', '어린이'),
+            ('elec', 'KC_전기_번호', '전기용품'),
+            ('daily', 'KC_생활_번호', '생활용품'),
+            ('broadcasting', 'KC_방송_번호', '방송통신')
+        ]
+
+        for prefix, key, name in kc_map:
+            cert_no = product.get(key, '').strip()
+            
+            radio_name = f"{prefix}KcUseGubunChk" 
+            input_name = f"{prefix}KcCertId"      
+
+            if cert_no: # 데이터가 있는 경우
+                print(f"    👉 [{name}] 인증번호 입력: {cert_no}")
+                try:
+                    # 1. '대상' 라디오 버튼 선택
+                    try:
+                        page.click(f'input[name="{radio_name}"][value="Y"]')
+                    except:
+                        page.locator(f'input[name="{radio_name}"]').first.click()
+                    
+                    time.sleep(0.5)
+
+                    # 2. 번호 입력
+                    page.fill(f'input[name="{input_name}"]', cert_no)
+                    
+                    # 3. [등록] 버튼 클릭
+                    try:
+                        btn_selector = f'input[name="{input_name}"] ~ a'
+                        if page.locator(btn_selector).count() > 0:
+                            page.click(btn_selector)
+                        else:
+                            page.locator(f'tr:has(input[name="{input_name}"])').get_by_role("link").click()
+                        
+                        print(f"       ㄴ [등록] 버튼 클릭 완료")
+                        time.sleep(0.5)
+                        
+                    except Exception as e:
+                        print(f"       ⚠️ [등록] 버튼 클릭 실패: {e}")
+
+                except Exception as e:
+                    print(f"    ⚠️ [{name}] 처리 중 오류: {e}")
+
+            else: # 데이터가 없는 경우
+                try:
+                    page.click(f'input[name="{radio_name}"][value="N"]')
+                except:
+                    pass
+        print("    ✅ 인증 정보 설정 완료")
+
     except Exception as e:
         print(f"    ❌ 인증 정보 처리 중 오류: {e}")
 
@@ -284,29 +329,22 @@ def register_images(context, page, product):
         except: print("    ❌ 기본이미지 실패")
 
 def register_smart_editor(page, html_content):
-    """
-    [v4.4] Iframe 내부의 에디터 버튼을 직접 제어하여 HTML 입력
-    """
     print("  📝 상세설명(HTML) 입력 중... (Iframe Control)")
     try:
-        # 1. Iframe 찾기
         frame_element = page.wait_for_selector('iframe[src*="SmartEditor2Skin"]', timeout=10000)
         frame = frame_element.content_frame()
         
         if frame:
             time.sleep(1)
-            # 2. HTML 탭 클릭
             try:
                 if frame.locator('.se2_to_html').is_visible():
                     frame.locator('.se2_to_html').click()
                     time.sleep(0.5)
             except: pass
 
-            # 3. 입력
             try:
                 frame.locator('.se2_input_htmlsrc').fill(html_content)
                 time.sleep(0.5)
-                # 4. Editor 탭 복귀
                 frame.locator('.se2_to_editor').click()
                 print("    ✅ 회사소개 문구 입력 완료")
             except Exception as e:
@@ -345,6 +383,9 @@ def register_delivery_fees(page):
         print(f"    ❌ 배송비 입력 중 오류: {e}")
 
 def submit_product(page):
+    """
+    [v4.7] 저장 버튼 클릭 후 화면 전환 및 서버 처리 대기
+    """
     print("\n  💾 [Action] 등록대기(저장) 실행...")
     try:
         page.evaluate("""
@@ -355,9 +396,9 @@ def submit_product(page):
         # JS 함수 직접 호출
         page.evaluate("if(typeof register === 'function') { register('1'); }")
 
-        # [v4.3] 사용자 요청: 등록 결과 확인을 위해 30초 대기
-        print("    ⏳ [Wait] 등록 결과 확인을 위해 30초 대기합니다...")
-        time.sleep(30)
+        # [v4.7] 연속 등록을 위해 6초 대기 (서버 처리 및 화면 전환)
+        print("    ⏳ [Processing] 저장 처리 및 화면 전환 대기 중 (6초)...")
+        time.sleep(6)
         
     except Exception as e:
         print(f"    ❌ 저장 처리 중 오류: {e}")
@@ -366,7 +407,7 @@ def submit_product(page):
 # [메인]
 # ======================================================
 def run_s2b_bot():
-    print(">>> [S2B_Agent] 봇 시작 (v4.4 - 스크롤활성화 & 에디터수정)")
+    print(">>> [S2B_Agent] 봇 시작 (v4.7 - 연속등록모드)")
     categories = load_category_data()
     products = load_products()
     if not products:
@@ -392,18 +433,17 @@ def run_s2b_bot():
             
             handle_popups_safely(context, page)
 
-            # 2. 루프
+            # 2. 루프 (연속 등록)
             for i, product in enumerate(products):
                 print(f"\n>>> [상품 {i+1}/{len(products)}] 등록 시작: {product.get('물품명')}")
                 
+                # [v4.7] 등록 페이지로 이동 (화면 리셋 효과)
                 try: page.goto(S2B_REGISTER_URL, timeout=60000, wait_until="domcontentloaded")
                 except: pass
                 
                 time.sleep(3) 
                 handle_popups_safely(context, page) 
                 close_interface_popups(page)
-                
-                # [v4.4] 스크롤 활성화 호출
                 enable_scroll(page)
 
                 try: page.wait_for_selector('input[name="f_goods_name"]', state="visible", timeout=30000)
@@ -411,6 +451,7 @@ def run_s2b_bot():
                     print("    ⚠️ 등록 폼 로드 실패, 건너뜀")
                     continue
 
+                # 각 단계별 입력 실행
                 register_categories(page, product, categories)
                 if TEST_MODE:
                     time.sleep(3)
@@ -418,14 +459,15 @@ def run_s2b_bot():
                 register_base_info(page, product)
                 register_cert_info(context, page, product)
                 register_images(context, page, product)
-                
-                # [v4.4] 수정된 에디터 함수 호출
                 register_smart_editor(page, COMPANY_INTRO_HTML)
-                
                 register_delivery_fees(page)
+                
+                # 저장 실행 (6초 대기)
                 submit_product(page)
                 
                 print(f">>> ✅ [상품 {i+1}] 처리 요청 완료.")
+                
+                # 성공 시 목록에서 제거 (다음 루프를 위해)
                 remove_success_product(product)
 
         except Exception as e:

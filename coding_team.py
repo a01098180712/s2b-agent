@@ -1,12 +1,13 @@
 import os
 import sys
-import shutil
 import subprocess
 import warnings
+import time
 from datetime import datetime
 from dotenv import load_dotenv
 from openai import OpenAI
 from google import genai
+from google.genai.types import GenerateContentConfig
 
 # 경고 무시
 warnings.filterwarnings("ignore")
@@ -16,7 +17,7 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# 테스트용 쿠팡 URL (사용자 제공)
+# [필수] 테스트용 쿠팡 URL (사용자 지정)
 TEST_COUPANG_URL = "https://www.coupang.com/vp/products/84423419?itemId=22521950655&vendorItemId=92392491533&pickType=COU_PICK&q=%EB%A8%BC%EC%A7%80+%EC%A0%9C%EA%B1%B0+%EC%97%90%EC%96%B4+%EC%8A%A4%ED%94%84%EB%A0%88%EC%9D%B4&searchId=40a49e5b23169008&sourceType=search&itemsCount=36&searchRank=1&rank=1&traceId=mldb2blk"
 
 # 2. 클라이언트 연결
@@ -34,60 +35,51 @@ def load_s2b_rules():
 S2B_RULES = load_s2b_rules()
 
 # =========================================================
-# 🤖 AI 개발팀 (Manager) v3.0 - Execution & Debugging
+# 🤖 AI 개발팀 (Manager) v4.2 - Strategic & Safe
 # =========================================================
 class AI_Dev_Team:
     def __init__(self):
         print("="*60)
-        print("🤖 [AI 팀장 v3.0] 실전 코딩/실행/디버깅 시스템 가동")
-        print("   - 코드를 작성하고 실제로 실행하여 검증합니다.")
-        print(f"   - 테스트 URL: {TEST_COUPANG_URL[:30]}...")
+        print("🤖 [AI 팀장 v4.2] 전략 수정: 데이터 명세화 & 프로필 인젝션")
+        self.review_model = "gemini-2.5-pro"
+        print(f"   - 검수 모델: {self.review_model}")
+        print("   - 안전 장치: 재시도 3회 제한, 보안 차단 시 즉시 중단")
         print("="*60 + "\n")
 
-    # [1] 코드 작성/수정 (ChatGPT)
-    def ask_coder(self, task, error_log=None):
+    # [1] 코드 작성 (ChatGPT)
+    def ask_coder(self, task, error_log=None, reviewer_feedback=None):
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        if error_log:
-            print(f"\n🚑 [ChatGPT] 에러를 분석하고 코드를 수정합니다...")
-            print(f"   ⚠️ 발생한 에러: {error_log.splitlines()[-1]}") # 마지막 줄만 출력
-            user_msg = f"""
-            [긴급 수정 요청]
-            작성해준 코드를 실행했더니 아래와 같은 에러가 발생했어.
-            에러 원인을 분석하고, 코드를 수정해서 완벽하게 작동하도록 고쳐줘.
-            
-            [에러 로그]
-            {error_log}
-            
-            [원래 요구사항]
-            {task}
-            """
-        else:
-            print(f"\n👨‍💻 [ChatGPT] 신규 코드를 작성합니다...")
-            user_msg = f"요구사항: {task}"
+        # [안전장치] 보안 차단(403, Access Denied) 감지 시 전략 변경 유도
+        if error_log and ("Access Denied" in error_log or "403" in error_log):
+            print("🚨 [Critical] 봇 탐지됨. 일반적인 수정으로는 불가능합니다.")
+            task += "\n\n[긴급 추가 지침] 단순 코드 수정 금지! 브라우저 실행 시 '사용자 프로필(User Data Dir)'을 로드하는 방식으로 코드를 전면 수정하세요."
 
         system_prompt = f"""
-        너는 Python/Playwright 자동화 전문 개발자야.
-        실제 실행 가능한 '완벽한 코드'를 작성해야 해.
+        너는 Python/Playwright 크롤링 전문가야.
         
-        [필수 규칙]
-        1. 코드 맨 윗줄 주석: "# Generated at: {current_time} (S2B_Agent v3.0)"
-        2. Playwright 사용 시:
-           - 'async/await' 필수.
-           - Anti-Bot 회피 옵션(--disable-blink-features=AutomationControlled) 필수.
-           - User-Agent 설정 필수.
-           - Selector 대기(wait_for_selector) 사용 시 타임아웃 예외처리 필수.
-        3. 코드는 마크다운(```python ... ```) 안에 작성.
+        [핵심 원칙]
+        1. 코드 상단 주석: "# Generated at: {current_time} (v4.2)"
+        2. **데이터 명세 준수**: S2B 등록에 필요한 필드(상품명, 가격, 이미지, 제조사, 원산지, KC인증)를 반드시 수집해야 함.
+        3. **실행 보장**: 문법 오류 절대 금지.
+        4. **비용 절감**: 불필요한 재시도를 줄이고, 확실한 선택자(Selector)를 사용.
         """
+        
+        # 메시지 구성
+        messages = [{"role": "system", "content": system_prompt}]
+        
+        if error_log:
+            messages.append({"role": "user", "content": f"이전 실행 에러:\n{error_log}\n\n위 에러를 해결하도록 코드를 수정해."})
+        elif reviewer_feedback:
+            messages.append({"role": "user", "content": f"검수자(Gemini) 피드백:\n{reviewer_feedback}\n\n위 지적사항을 반영해."})
+        else:
+            messages.append({"role": "user", "content": f"작업 지시서:\n{task}"})
 
         try:
             response = gpt_client.chat.completions.create(
-                model="gpt-4o", 
-                messages=[{"role": "system", "content": system_prompt},
-                          {"role": "user", "content": user_msg}]
+                model="gpt-4o", messages=messages
             )
             code = response.choices[0].message.content
-            # 마크다운 파싱
             if "```python" in code:
                 code = code.split("```python")[1].split("```")[0].strip()
             elif "```" in code:
@@ -97,12 +89,10 @@ class AI_Dev_Team:
             print(f"❌ ChatGPT 통신 오류: {e}")
             return None
 
-    # [2] 코드 실행 검증 (Local Execution)
-    def execute_code(self, filename, input_val):
-        print(f"🏃 [System] '{filename}' 실행 테스트 중... (최대 60초)")
-        
+    # [2] 실행 검증 (Local Execution)
+    def execute_code(self, filename):
+        print(f"🏃 [System] '{filename}' 실행 테스트... (URL 주입)")
         try:
-            # subprocess로 파이썬 파일 실행 (입력값 파이프 전달)
             process = subprocess.Popen(
                 [sys.executable, filename],
                 stdin=subprocess.PIPE,
@@ -110,111 +100,117 @@ class AI_Dev_Team:
                 stderr=subprocess.PIPE,
                 text=True,
                 encoding='utf-8',
-                env=os.environ.copy() # 현재 환경변수(.venv 등) 상속
+                env=os.environ.copy()
             )
-            
-            # 테스트 URL 입력 및 실행 결과 대기
-            stdout, stderr = process.communicate(input=f"{input_val}\n", timeout=60)
+            # URL 자동 입력
+            stdout, stderr = process.communicate(input=f"{TEST_COUPANG_URL}\n", timeout=60)
             
             if process.returncode == 0:
-                print("   ✅ 실행 성공 (Exit Code 0)")
-                # 성공했더라도 중요 에러 키워드가 stdout/stderr에 있는지 체크
-                if "Error:" in stderr or "Traceback" in stderr:
-                    return False, stderr
+                # 내부 에러 체크
+                if "Error" in stdout or "Exception" in stdout:
+                     return False, stdout
+                print("   ✅ [실행 성공]")
                 return True, stdout
             else:
-                print("   💥 실행 실패 (에러 발생)")
+                print("   💥 [실행 실패]")
                 return False, stderr
-
-        except subprocess.TimeoutExpired:
-            process.kill()
-            return False, "Timeout: 프로그램이 60초 동안 응답하지 않아 강제 종료됨. (무한 루프 가능성)"
         except Exception as e:
             return False, str(e)
 
-    # [3] S2B 규칙 검수 (Gemini)
+    # [3] 검수 (Gemini)
     def ask_reviewer(self, code):
-        print("🧐 [Gemini] 실행 검증 완료. S2B 가이드라인 준수 여부 확인 중...")
-        prompt = f"""
-        너는 S2B 등록 시스템 검수자야.
-        아래 코드는 실행 테스트를 통과했어. 이제 'S2B 가이드라인' 위반 여부만 확인해.
+        print(f"🧐 [Gemini] 데이터 무결성 및 S2B 규정 검수 ({self.review_model})...")
         
-        [가이드라인]
-        {S2B_RULES}
-        
-        [체크리스트]
-        1. 금지어(로켓배송, 최저가 등) 필터링 로직이 있는가?
-        2. 이미지 저장 경로가 올바른가?
-        
-        문제 없으면 "PASS", 위반이 있으면 "FAIL: 이유"를 적어줘.
-        
-        [코드]
-        {code[:20000]}
+        system_instruction = """
+        당신은 'S2B 데이터 검수관'입니다.
+        코드가 아래 [필수 수집 항목]을 정확히 크롤링하는지 확인하세요.
+
+        [필수 수집 항목]
+        1. 상품명 (특수문자 정제 로직 포함 여부)
+        2. 가격 (숫자 변환 여부)
+        3. 이미지 (메인/상세 이미지 다운로드 및 절대경로 저장)
+        4. 원산지/제조사 (없으면 '상세설명 참조' 처리 여부)
+        5. KC인증 (정보 수집 로직 존재 여부)
+
+        [판정 기준]
+        - 위 항목 중 하나라도 누락되면 즉시 "FAIL"과 함께 누락된 항목을 지적하세요.
+        - 봇 탐지 회피(Stealth) 로직이 빈약하면 "FAIL"을 주고 'User Data Dir' 사용을 권장하세요.
         """
+        
         try:
-            res = gemini_client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+            res = gemini_client.models.generate_content(
+                model=self.review_model, 
+                contents=f"코드 검수 요청:\n{code[:30000]}",
+                config=GenerateContentConfig(system_instruction=system_instruction)
+            )
             return res.text.strip() if res.text else "PASS"
-        except:
-            return "PASS"
+        except Exception as e:
+            return f"FAIL: API Error - {str(e)}"
 
     # [메인]
     def run(self, task, filename):
         error_log = None
+        feedback = None
         
-        # 최대 4번 수정 기회 (초안 1회 + 수정 3회)
-        for attempt in range(4):
-            # 1. 코딩 (초안 또는 에러 수정)
-            code = self.ask_coder(task, error_log)
+        # [비용 절감] 시도 횟수 3회로 축소
+        for attempt in range(3):
+            print(f"\n🔄 [Cycle {attempt+1}/3] 작업 진행 중...")
+            
+            code = self.ask_coder(task, error_log, feedback)
             if not code: return
 
-            # 파일 저장
             with open(filename, "w", encoding="utf-8") as f:
                 f.write(code)
             
-            # 2. 실행 테스트
-            success, log = self.execute_code(filename, TEST_COUPANG_URL)
+            success, log = self.execute_code(filename)
             
             if success:
-                # 3. 성공 시 S2B 규칙 검사
                 review = self.ask_reviewer(code)
-                if "PASS" in review.upper():
-                    print(f"\n🎉 [완료] 모든 테스트 통과! 파일 생성됨: {filename}")
-                    print(f"   📄 실행 로그 일부:\n{log[:300]}...")
+                if "PASS" in review.upper() and "FAIL" not in review.upper():
+                    print(f"\n🎉 [완료] 테스트 통과! 파일: {filename}")
+                    print(f"   📄 로그 요약:\n{log[:200]}...")
                     return
                 else:
-                    print(f"   🔄 실행은 되지만 S2B 규칙 위반. 수정 요청...")
-                    error_log = f"실행은 성공했지만 S2B 가이드라인 위반:\n{review}"
+                    print(f"   🚫 [반려] 검수관 지적사항 발생.")
+                    feedback = review
+                    error_log = None
             else:
-                # 실패 시 에러 로그 확보
-                print(f"   🔧 디버깅 필요. 재작업 지시...")
+                print(f"   💥 [실행 오류] 수정 필요.")
                 error_log = log
+                feedback = None
+                
+                # [안전장치] 봇 탐지 에러가 반복되면 조기 종료
+                if "TargetClosedError" in log or "403" in log:
+                    print("   ⚠️ [경고] 봇 탐지됨. 무리한 재시도 대신 종료합니다.")
+                    break
 
-        print(f"\n🚨 [실패] 4회 시도 후에도 해결되지 않음. 마지막 코드가 저장됨: {filename}")
-        print(f"   마지막 에러:\n{error_log[:500]}...")
+        print(f"\n🚨 [종료] 3회 시도 후 미해결. (마지막 파일 저장됨: {filename})")
 
 if __name__ == "__main__":
     team = AI_Dev_Team()
     
-    # 작업 지시서
+    # [데이터 명세 & 전략이 포함된 작업 지시서]
     task_description = """
-    [목표: coupang_crawler.py 개발]
-    쿠팡 상품 URL을 입력받아 상품명, 가격, 상세정보, 이미지를 수집하는 크롤러를 만들어줘.
+    [목표: coupang_crawler.py 개발 - S2B 데이터 확보 및 생존 전략]
     
-    [핵심 요구사항]
-    1. **Bot 탐지 회피**:
-       - Playwright Launch 옵션: headless=False, args=['--disable-blink-features=AutomationControlled']
-       - User-Agent: 리얼한 Chrome User-Agent 사용
-       - navigator.webdriver 숨김 스크립트 적용
-    2. **입력 처리**:
-       - `input("URL 입력: ")`을 사용하여 URL을 받도록 작성 (테스트 시 자동 입력됨).
-    3. **데이터 처리**:
-       - 가격은 숫자만 추출 (예: "19,800원" -> 19800).
-       - 상품명에서 '로켓배송', '최저가' 등 홍보성 문구 제거.
-       - 이미지(메인/상세) 다운로드 -> `C:\\S2B_Agent\\images` 저장.
+    1. **수집 데이터 명세 (S2B 필수)**:
+       - `product_name`: 상품명 (S2B 금지어 '로켓, 최저가, 추천' 제거 필수)
+       - `price`: 판매가 (숫자형변환, 0원이면 수집 제외)
+       - `origin`: 원산지 (상세정보 표에서 추출, 실패 시 '상세설명 참조')
+       - `maker`: 제조사 (상세정보 표에서 추출)
+       - `kc_info`: KC인증번호 (텍스트 추출, 없으면 '대상아님')
+       - `images`: 메인/상세 이미지 -> `C:\\S2B_Agent\\images`에 다운로드 (절대경로 List)
+       
+    2. **생존 전략 (Anti-Bot Level 2)**:
+       - 단순 Stealth로는 부족함. **Chrome 사용자 프로필(User Data Dir)**을 로드하는 방식을 적용할 것.
+       - Playwright 실행 시 `launch_persistent_context`를 사용하거나 `user_data_dir` 인자를 사용하여,
+         현재 사용자의 로그인 정보(쿠키)를 그대로 유지한 채 브라우저를 열도록 작성하라.
+         (경로 예시: `./user_data` 폴더 자동 생성 및 사용)
+         
+    3. **실행 로직**:
+       - `input("URL: ")`로 입력받아 크롤링 수행.
        - 결과는 `s2b_complete_data.json`에 저장.
-    4. **오류 제어**:
-       - Timeout 발생 시 즉시 종료하지 말고, 재시도하거나(최대 3회) 부드럽게 넘어가도록 처리 (try-except 필수).
-       - **TargetClosedError** 방지를 위해 페이지 로딩 대기 시간(`wait_for_timeout`)을 넉넉히 줄 것.
+       - 에러 발생 시(Timeout 등) 3회 재시도 `try-except` 필수.
     """
     
     team.run(task_description, "coupang_crawler.py")

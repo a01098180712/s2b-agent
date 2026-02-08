@@ -1,40 +1,26 @@
 import os
-from dotenv import load_dotenv
 from google import genai
 
-# 1. 환경변수 로드
-load_dotenv()
-api_key = os.getenv("GEMINI_API_KEY")
+# 수정 후
+api_key = "AIzaSyAhtTlnX6q-C3zz3IRM1eOaQVvO0qWp-hw" # 발급받으신 API 키를 직접 입력하세요.
+client = genai.Client(api_key=api_key)
 
-# ⭐ 테스트할 모델명 (사용자 리스트에 있던 모델)
-TARGET_MODEL = "gemini-2.0-flash-lite"
+# 3. 모델 설정 (사용자 지정: Gemini 2.5 Pro)
+model_id = "gemini-2.5-pro" 
 
-print("-" * 60)
-print(f"🧪 [검증] '{TARGET_MODEL}' 연결 테스트")
-print("-" * 60)
+def test_gemini_call():
+    try:
+        print(f"--- {model_id} 호출 테스트 시작 ---")
+        # 2.5 Pro의 복잡한 추론 성능을 확인하기 위한 간단한 논리 질문 포함
+        response = client.models.generate_content(
+            model=model_id,
+            contents="이것은 Gemini 2.5 Pro API 연결 테스트입니다. 연결이 확인되면 '2.5 Pro 연결 완료'라고 답해주세요."
+        )
+        print(f"응답 결과: {response.text}")
+        print("--- 테스트 성공 ---")
+    except Exception as e:
+        print(f"--- 테스트 실패 ---")
+        print(f"에러 내용: {e}")
 
-if not api_key:
-    print("❌ API 키가 없습니다.")
-    exit()
-
-try:
-    client = genai.Client(api_key=api_key)
-    
-    print(f"🚀 요청 보내는 중... (Model: {TARGET_MODEL})")
-    
-    response = client.models.generate_content(
-        model=TARGET_MODEL, 
-        contents="Hello, Gemini! Are you ready?"
-    )
-    
-    print("\n✅ [테스트 성공!]")
-    print(f"   응답: {response.text.strip()}")
-    print("-" * 60)
-    print("📢 결론: 이 모델은 사용 가능합니다. coding_team.py에 적용해도 좋습니다.")
-
-except Exception as e:
-    print(f"\n❌ [테스트 실패] 에러 내용:\n{e}")
-    print("-" * 60)
-    print("📢 결론: 이 모델은 사용할 수 없습니다. 다른 모델(예: gemini-2.5-flash)을 시도해야 합니다.")
-
-print("-" * 60)
+if __name__ == "__main__":
+    test_gemini_call()

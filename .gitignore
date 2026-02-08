@@ -1,4 +1,11 @@
-.env
+# 가상환경
 .venv/
-__pycache__/
+venv/
+
+# 브라우저 사용자 데이터 (현재 경고의 원인)
+user_data/
+
+# API 키 및 설정 파일
+.env
 *.pyc
+__pycache__/

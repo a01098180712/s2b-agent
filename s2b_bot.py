@@ -126,6 +126,42 @@ def register_categories(page, product):
     except Exception as e:
         print(f"    ⚠️ 카테고리 선택 중 경고 (기본값 확인 필요): {e}")
 
+def register_kc_info(page, product):
+    """KC 인증 정보 입력 (전기/생활/어린이/방송통신)"""
+    print("  🛡️ KC 인증 정보 입력...")
+    
+    # 입력 데이터 매핑 (JSON 키 -> 설명)
+    kc_map = {
+        "KC_전기_번호": {"name": "f_cert_electric_no", "desc": "전기용품"},  # [확인 필요] 실제 input name 확인 요망
+        "KC_생활_번호": {"name": "f_cert_living_no", "desc": "생활용품"},    # [확인 필요]
+        "KC_어린이_번호": {"name": "f_cert_child_no", "desc": "어린이제품"}, # [확인 필요]
+        "KC_방송_번호": {"name": "f_cert_broadcast_no", "desc": "방송통신"}  # [확인 필요]
+    }
+
+    try:
+        has_kc = False
+        for key, info in kc_map.items():
+            kc_code = product.get(key)
+            if kc_code:
+                # 1. 값이 있으면 해당 필드 찾아서 입력 시도
+                target_name = info['name']
+                # S2B 페이지에 해당 인풋이 존재하는지 체크 (에러 방지)
+                if page.locator(f'input[name="{target_name}"]').count() > 0:
+                    page.fill(f'input[name="{target_name}"]', kc_code)
+                    print(f"    ✅ {info['desc']} 번호 입력: {kc_code}")
+                    has_kc = True
+                else:
+                    print(f"    ⚠️ {info['desc']} 입력란({target_name})을 찾을 수 없음 (수동 확인 필요)")
+        
+        if not has_kc:
+            print("    ℹ️ 입력할 KC 정보가 없습니다. (대상 아님)")
+            # 필요 시 '대상 아님' 체크박스 로직 추가 가능
+            # if page.locator('input[name="f_cert_yn"]').count() > 0:
+            #     page.click('input[name="f_cert_yn"][value="N"]') 
+
+    except Exception as e:
+        print(f"    ❌ KC 정보 입력 중 오류: {e}")
+
 def register_images(page, product):
     """로컬 이미지 파일 업로드"""
     print("  🖼️ 이미지 업로드...")
@@ -265,7 +301,8 @@ def run_s2b_bot():
                 # 정보 입력
                 register_categories(page, product)
                 register_base_info(page, product)
-                # (KC 인증 정보 입력 로직은 필요 시 추가 - 현재는 기본정보 위주)
+                # [추가] KC 인증 정보 입력
+                register_kc_info(page, product)
                 register_images(page, product)
                 register_smart_editor(page)
                 

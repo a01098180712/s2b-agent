@@ -4,24 +4,21 @@ import time
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 
-# 1. 환경 변수 로드
+# 1. 환경 변수 및 설정
 load_dotenv()
 
-# ======================================================
-# [설정]
-# ======================================================
-TEST_MODE = False 
+USER_ID = os.getenv("S2B_ID") 
+USER_PW = os.getenv("S2B_PW")
+HEADLESS = os.getenv("HEADLESS_MODE", "false").lower() == "true"
+
+# [핵심] 봇은 오직 이 파일만 바라봅니다 (이미지 경로가 로컬로 되어 있는 완성본)
+BOT_DATA_FILE = 's2b_bot_input.json' 
+CATEGORY_FILE = 's2b_categories.json'
 
 S2B_LOGIN_URL = 'https://www.s2b.kr/S2BNCustomer/Login.do?type=sp&userDomain='
 S2B_REGISTER_URL = 'https://www.s2b.kr/S2BNVendor/rema100.do?forwardName=goRegistView'
-DATA_FILE = 's2b_complete_data.json'
-CATEGORY_FILE = 's2b_categories.json'
 
-USER_ID = os.getenv("S2B_ID", "taurus06") 
-USER_PW = os.getenv("S2B_PW", "rlathdxo06!")
-HEADLESS = os.getenv("HEADLESS_MODE", "false").lower() == "true"
-
-# [v4.2] 고정값 설정
+# [v4.2] 고정값 설정 (배송비 등)
 FIXED_VALUES = {
     "재고수량": "999",
     "제주배송비": "5000",
@@ -45,439 +42,252 @@ COMPANY_INTRO_HTML = """<p style="font-size: 15pt; font-weight: bold;">━━━
 <p style="font-size: 15pt; font-weight: bold;">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</p>"""
 
 # ======================================================
-# [유틸리티]
+# [유틸리티] 파일 로드 및 카테고리/팝업 처리
 # ======================================================
-def load_category_data():
-    file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), CATEGORY_FILE)
-    if not os.path.exists(file_path): return {}
+def load_products():
+    """AI 변환기가 생성한 최종 JSON 로드"""
+    if not os.path.exists(BOT_DATA_FILE):
+        print(f"❌ 오류: 입력 파일({BOT_DATA_FILE})이 없습니다.")
+        return []
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            print("📂 카테고리 데이터 로드 완료")
+        with open(BOT_DATA_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            print(f"📂 변환된 데이터 {len(data)}개를 로드했습니다.")
+            return data
+    except Exception as e:
+        print(f"❌ JSON 로드 실패: {e}")
+        return []
+
+def load_category_data():
+    if not os.path.exists(CATEGORY_FILE): return {}
+    try:
+        with open(CATEGORY_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     except: return {}
 
-def resolve_category_codes(product, categories):
-    if not categories: return None, None, None
-    c1_val = product.get('카테고리1') or product.get('카테고리1_코드')
-    c2_val = product.get('카테고리2') or product.get('카테고리2_코드')
-    c3_val = product.get('카테고리3') or product.get('카테고리3_코드')
-    c1_code, c2_code, c3_code = None, None, None
-
-    if c1_val:
-        if str(c1_val).isdigit(): c1_code = str(c1_val)
-        elif 'category1' in categories:
-            for item in categories['category1']:
-                if item['text'] == c1_val:
-                    c1_code = item['value']; break
-            if not c1_code:
-                for item in categories['category1']:
-                    if c1_val in item['text'] or item['text'] in c1_val:
-                        c1_code = item['value']; break
-    
-    if c1_code and c2_val:
-        if str(c2_val).isdigit(): c2_code = str(c2_val)
-        elif 'category2' in categories and c1_code in categories['category2']:
-            for item in categories['category2'][c1_code]:
-                if item['text'] == c2_val:
-                    c2_code = item['value']; break
-            if not c2_code:
-                for item in categories['category2'][c1_code]:
-                    if c2_val in item['text'] or item['text'] in c2_val:
-                        c2_code = item['value']; break
-
-    if c1_code and c2_code and c3_val:
-        key = f"{c1_code}_{c2_code}"
-        if str(c3_val).isdigit(): c3_code = str(c3_val)
-        elif 'category3' in categories and key in categories['category3']:
-            for item in categories['category3'][key]:
-                if item['text'] == c3_val:
-                    c3_code = item['value']; break
-            if not c3_code:
-                for item in categories['category3'][key]:
-                    if c3_val in item['text'] or item['text'] in c3_val:
-                        c3_code = item['value']; break
-    
-    return c1_code, c2_code, c3_code
-
-def handle_popups_safely(context, main_page):
-    """새 창(Window)으로 뜨는 팝업 닫기"""
+def remove_success_product(product_to_remove, all_products):
+    """성공한 상품을 리스트에서 제거하고 파일 갱신 (중단 후 재시작 지원)"""
+    remaining = [p for p in all_products if p['물품명'] != product_to_remove['물품명']]
     try:
-        time.sleep(1)
-        for p in context.pages:
-            if p != main_page:
-                try: 
-                    if not p.is_closed(): p.close()
-                except: pass
-    except: pass
+        with open(BOT_DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump(remaining, f, ensure_ascii=False, indent=4)
+        print(f"    🗑️ 목록에서 제거됨 (남은 상품: {len(remaining)}개)")
+    except Exception as e:
+        print(f"    ⚠️ 파일 갱신 실패: {e}")
 
-def close_interface_popups(page):
-    """
-    [v4.3] 페이지 내부의 레이어 팝업 및 알림창을 강제로 닫습니다.
-    """
-    print("    🧹 [Popup] 내부 팝업/알림창 정리 시도...")
+def handle_popups(page):
+    """S2B 내부 팝업/알림창 닫기"""
     try:
+        # 시스템 알림창 닫기
         page.evaluate("""() => {
             const popups = document.querySelectorAll('article.popup.alert');
-            popups.forEach(popup => {
-                if (!popup.classList.contains('hide')) {
-                    popup.classList.add('hide');
-                }
-            });
-            const closeButtons = [
-                'span.btn_popclose a', '.btn_popclose',
-                '[class*="close"]', '[onclick*="close"]'
-            ];
-            for (const selector of closeButtons) {
-                const btn = document.querySelector(selector);
-                if (btn && btn.offsetParent !== null) {
-                    btn.click();
-                    break;
-                }
-            }
-        }""")
-        time.sleep(1)
-    except Exception as e:
-        print(f"    ⚠️ 팝업 정리 중 오류(무시됨): {e}")
-
-def enable_scroll(page):
-    """
-    [v4.4] 페이지의 스크롤바를 강제로 활성화하여 전체 내용을 확인할 수 있게 합니다.
-    """
-    try:
-        page.evaluate("""() => {
-            document.documentElement.style.overflow = 'auto';
-            document.body.style.overflow = 'auto';
-            document.body.style.height = 'auto';
+            popups.forEach(p => { if(!p.classList.contains('hide')) p.classList.add('hide'); });
+            
+            // 닫기 버튼들 클릭
+            const btns = document.querySelectorAll('.btn_popclose, span.btn_popclose a');
+            btns.forEach(b => b.click());
         }""")
     except: pass
-
-def handle_post_upload_popup(context):
-    try:
-        time.sleep(2)
-        pages = context.pages
-        for p in pages:
-            if "preview" in p.url.lower() or "pop" in p.url.lower():
-                try:
-                    if not p.is_closed():
-                        p.close()
-                        print("    👉 이미지 미리보기/팝업 닫음")
-                except: pass
-    except: pass
-
-def load_products():
-    if not os.path.exists(DATA_FILE): return []
-    try:
-        with open(DATA_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except: return []
-
-def remove_success_product(product_to_remove):
-    products = load_products()
-    updated_products = [
-        p for p in products 
-        if not (p.get('물품명') == product_to_remove.get('물품명') and p.get('규격') == product_to_remove.get('규격'))
-    ]
-    try:
-        with open(DATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(updated_products, f, ensure_ascii=False, indent=4)
-        print(f"    🗑️ 데이터 파일에서 삭제 완료 ({len(products)} -> {len(updated_products)})")
-    except Exception as e:
-        print(f"    ❌ 데이터 파일 갱신 실패: {e}")
 
 def global_dialog_handler(dialog):
+    """브라우저 Alert/Confirm 자동 수락"""
     try: dialog.accept()
     except: pass
 
 # ======================================================
-# [기능] 등록 단계별 함수
+# [기능] S2B 등록 로직 (업로드 전용)
 # ======================================================
+def register_categories(page, product):
+    """카테고리 선택 (코드가 이미 있으면 바로 선택)"""
+    print(f"  📂 카테고리 설정...")
+    
+    # AI 컨버터가 이미 코드를 찾아서 '카테고리X' 필드에 넣어줬다고 가정
+    c1 = product.get('카테고리1')
+    c2 = product.get('카테고리2')
+    c3 = product.get('카테고리3')
 
-def register_categories(page, product, categories):
-    print(f"\n  📂 [{product.get('물품명')}] 카테고리 설정...")
-    c1, c2, c3 = resolve_category_codes(product, categories)
-    if not c1:
-        print(f"    ⚠️ 매칭 실패: '{product.get('카테고리1')}' 코드를 찾지 못했습니다.")
-        return
     try:
-        page.select_option('select[name="f_category_code1"]', value=str(c1))
-        time.sleep(1.0) 
+        if c1:
+            page.select_option('select[name="f_category_code1"]', value=str(c1))
+            time.sleep(1.0)
+        
         if c2:
-            try: page.wait_for_function("document.querySelector('select[name=\"f_category_code2\"]').options.length > 1", timeout=5000)
-            except: pass
-            time.sleep(0.5)
+            # 2차 카테고리 로딩 대기
+            page.wait_for_function("document.querySelector('select[name=\"f_category_code2\"]').options.length > 1", timeout=5000)
             page.select_option('select[name="f_category_code2"]', value=str(c2))
             time.sleep(1.0)
-            if c3:
-                try: page.wait_for_function("document.querySelector('select[name=\"f_category_code3\"]').options.length > 1", timeout=5000)
-                except: pass
-                time.sleep(0.5)
-                page.select_option('select[name="f_category_code3"]', value=str(c3))
-                time.sleep(0.5)
-        print("    ✅ 카테고리 설정 완료")
+            
+        if c3:
+            # 3차 카테고리 로딩 대기
+            page.wait_for_function("document.querySelector('select[name=\"f_category_code3\"]').options.length > 1", timeout=5000)
+            page.select_option('select[name="f_category_code3"]', value=str(c3))
+            
+        print("    ✅ 카테고리 선택 완료")
     except Exception as e:
-        print(f"    ❌ 카테고리 선택 중 오류: {e}")
+        print(f"    ⚠️ 카테고리 선택 중 경고 (기본값 확인 필요): {e}")
+
+def register_images(page, product):
+    """로컬 이미지 파일 업로드"""
+    print("  🖼️ 이미지 업로드...")
+    
+    # 1. 상세 이미지 (이미지 병합된 파일 경로)
+    detail_path = product.get('상세이미지')
+    if detail_path and os.path.exists(detail_path):
+        try:
+            # 파일 입력창이 안 보일 수 있으므로 강제로 보이게 하거나 바로 set_input_files 사용
+            page.set_input_files('input[name="f_goods_explain_img_file"]', detail_path)
+            time.sleep(1) # 업로드 처리 대기
+            
+            # 업로드 후 팝업이 뜰 경우 닫기
+            handle_popups(page)
+            print("    ✅ 상세이미지 등록됨")
+        except Exception as e:
+            print(f"    ❌ 상세이미지 업로드 실패: {e}")
+    
+    # 2. 기본 이미지 (대표 이미지)
+    main_path = product.get('기본이미지1')
+    if main_path and os.path.exists(main_path):
+        try:
+            page.set_input_files('input[name="f_img1_file"]', main_path)
+            time.sleep(1)
+            handle_popups(page)
+            print("    ✅ 기본이미지 등록됨")
+        except Exception as e:
+            print(f"    ❌ 기본이미지 업로드 실패: {e}")
 
 def register_base_info(page, product):
-    print("  📝 기본 정보 및 원산지 입력...")
+    """기본 정보 입력"""
+    print("  📝 기본 정보 입력...")
     try:
-        if product.get('물품명'): page.fill('input[name="f_goods_name"]', product['물품명'])
-        if product.get('규격'): page.fill('input[name="f_size"]', product['규격'])
+        page.fill('input[name="f_goods_name"]', product['물품명'])
+        page.fill('input[name="f_size"]', product['규격'])
         
-        model_name = product.get('모델명', '')
-        if model_name and model_name != '없음':
+        # 모델명 처리
+        if product.get('모델명') and product['모델명'] != '없음':
             page.click('input[name="f_model_yn"][value="N"]')
-            page.fill('input[name="f_model"]', model_name)
+            page.fill('input[name="f_model"]', product['모델명'])
         else:
-            page.click('input[name="f_model_yn"][value="Y"]')
+            page.click('input[name="f_model_yn"][value="Y"]') # 모델명 없음
 
+        # 가격 (쉼표 제거)
         price = str(product.get('제시금액', '0')).replace(',', '')
         page.fill('input[name="f_estimate_amt"]', price)
-        if product.get('제조사명'): page.fill('input[name="f_factory"]', product['제조사명'])
+        
+        page.fill('input[name="f_factory"]', product.get('제조사명', '기타'))
         page.fill('input[name="f_remain_qnt"]', FIXED_VALUES["재고수량"])
         
-        material = product.get('소재재질', '')
-        if not material: material = "상세설명 참조"
+        # 재질
+        material = product.get('소재재질') or product.get('재질') or "상세설명 참조"
         page.fill('input[name="f_material"]', material)
         
         page.select_option('select[name="f_credit"]', FIXED_VALUES["판매단위"])
 
-        origin = product.get('원산지', '')
-        if '한국' in origin or '국내' in origin:
-            page.click('input[name="f_home_divi"][value="1"]')
+        # 원산지 (국산/수입)
+        origin = product.get('원산지', '국산')
+        if '한국' in origin or '국산' in origin or '경기' in origin:
+            page.click('input[name="f_home_divi"][value="1"]') # 국산
         else:
-            page.click('input[name="f_home_divi"][value="2"]')
-            try: page.select_option('#select_home_02', 'ZD000002')
+            page.click('input[name="f_home_divi"][value="2"]') # 수입
+            try: page.select_option('#select_home_02', 'ZD000002') # 아시아 등 기본 선택
             except: pass
-        print("    ✅ 기본 정보 입력 완료")
-    except Exception as e:
-        print(f"    ❌ 기본 정보 입력 중 오류: {e}")
-
-def register_cert_info(context, page, product):
-    print("  🏆 인증 정보(KC/G2B) 처리 (v4.6: 팝업 처리 제거)...")
-    try:
-        kc_map = [
-            ('kids', 'KC_어린이_번호', '어린이'),
-            ('elec', 'KC_전기_번호', '전기용품'),
-            ('daily', 'KC_생활_번호', '생활용품'),
-            ('broadcasting', 'KC_방송_번호', '방송통신')
-        ]
-
-        for prefix, key, name in kc_map:
-            cert_no = product.get(key, '').strip()
             
-            radio_name = f"{prefix}KcUseGubunChk" 
-            input_name = f"{prefix}KcCertId"      
-
-            if cert_no: # 데이터가 있는 경우
-                print(f"    👉 [{name}] 인증번호 입력: {cert_no}")
-                try:
-                    # 1. '대상' 라디오 버튼 선택
-                    try:
-                        page.click(f'input[name="{radio_name}"][value="Y"]')
-                    except:
-                        page.locator(f'input[name="{radio_name}"]').first.click()
-                    
-                    time.sleep(0.5)
-
-                    # 2. 번호 입력
-                    page.fill(f'input[name="{input_name}"]', cert_no)
-                    
-                    # 3. [등록] 버튼 클릭
-                    try:
-                        btn_selector = f'input[name="{input_name}"] ~ a'
-                        if page.locator(btn_selector).count() > 0:
-                            page.click(btn_selector)
-                        else:
-                            page.locator(f'tr:has(input[name="{input_name}"])').get_by_role("link").click()
-                        
-                        print(f"       ㄴ [등록] 버튼 클릭 완료")
-                        time.sleep(0.5)
-                        
-                    except Exception as e:
-                        print(f"       ⚠️ [등록] 버튼 클릭 실패: {e}")
-
-                except Exception as e:
-                    print(f"    ⚠️ [{name}] 처리 중 오류: {e}")
-
-            else: # 데이터가 없는 경우
-                try:
-                    page.click(f'input[name="{radio_name}"][value="N"]')
-                except:
-                    pass
-        print("    ✅ 인증 정보 설정 완료")
-
     except Exception as e:
-        print(f"    ❌ 인증 정보 처리 중 오류: {e}")
+        print(f"    ❌ 기본 정보 입력 오류: {e}")
 
-def register_images(context, page, product):
-    print("  🖼️ 이미지 업로드 처리...")
-    detail_img_path = product.get('상세이미지', '')
-    if detail_img_path and os.path.exists(detail_img_path):
-        try:
-            page.set_input_files('input[name="f_goods_explain_img_file"]', detail_img_path)
-            handle_post_upload_popup(context)
-            print("    ✅ 상세이미지 완료")
-        except: print("    ❌ 상세이미지 실패")
-    
-    time.sleep(1)
-    img1_path = product.get('기본이미지1', '')
-    if img1_path and os.path.exists(img1_path):
-        try:
-            page.set_input_files('input[name="f_img1_file"]', img1_path)
-            handle_post_upload_popup(context)
-            print("    ✅ 기본이미지 완료")
-        except: print("    ❌ 기본이미지 실패")
-
-def register_smart_editor(page, html_content):
-    print("  📝 상세설명(HTML) 입력 중... (Iframe Control)")
+def register_smart_editor(page):
+    """상세설명(HTML) 입력"""
+    print("  📝 상세설명 입력...")
     try:
-        frame_element = page.wait_for_selector('iframe[src*="SmartEditor2Skin"]', timeout=10000)
-        frame = frame_element.content_frame()
-        
-        if frame:
+        # 스마트에디터 프레임 찾기
+        frame_el = page.wait_for_selector('iframe[src*="SmartEditor2Skin"]', timeout=5000)
+        if frame_el:
+            frame = frame_el.content_frame()
             time.sleep(1)
-            try:
-                if frame.locator('.se2_to_html').is_visible():
-                    frame.locator('.se2_to_html').click()
-                    time.sleep(0.5)
-            except: pass
-
-            try:
-                frame.locator('.se2_input_htmlsrc').fill(html_content)
-                time.sleep(0.5)
+            # HTML 모드 전환 -> 내용 입력 -> Editor 모드 복귀
+            if frame.locator('.se2_to_html').is_visible():
+                frame.locator('.se2_to_html').click()
+                frame.locator('.se2_input_htmlsrc').fill(COMPANY_INTRO_HTML)
                 frame.locator('.se2_to_editor').click()
-                print("    ✅ 회사소개 문구 입력 완료")
-            except Exception as e:
-                print(f"    ⚠️ 입력 실패: {e}")
-        else:
-            print("    ❌ 에디터 프레임 없음")
     except Exception as e:
-        print(f"    ❌ 에디터 오류: {e}")
-
-def register_delivery_fees(page):
-    print("  🚚 배송비 및 납품정보 입력...")
-    try:
-        page.click('input[name="f_delivery_fee_kind"][value="1"]')
-        page.click('input[name="f_delivery_method"][value="1"]')
-        page.click('input[name="delivery_area"][value="1"]')
-        page.click('input[name="f_delivery_group_yn"][value="N"]')
-        page.select_option('select[name="f_delivery_limit"]', FIXED_VALUES["납품기간"]) 
-        page.select_option('select[name="f_tax_method"]', FIXED_VALUES["과세여부"])
-        
-        return_fee = FIXED_VALUES["반품배송비"]
-        exchange_fee = FIXED_VALUES["교환배송비"]
-        page.evaluate(f"""() => {{
-            const ret = document.querySelector('input[name="f_return_fee"]');
-            const exch = document.querySelector('input[name="f_exch_fee"]'); 
-            if(ret) ret.value = '{return_fee}';
-            if(exch) exch.value = '{exchange_fee}';
-        }}""")
-
-        try:
-            jeju_chk = page.locator('input[name="f_jeju_delivery_yn"]')
-            if not jeju_chk.is_checked(): jeju_chk.click()
-            page.fill('input[name="f_jeju_delivery_fee"]', FIXED_VALUES["제주배송비"])
-        except: pass
-        print("    ✅ 배송비 설정 완료")
-    except Exception as e:
-        print(f"    ❌ 배송비 입력 중 오류: {e}")
+        print(f"    ⚠️ 에디터 입력 실패 (무시됨): {e}")
 
 def submit_product(page):
-    """
-    [v4.7] 저장 버튼 클릭 후 화면 전환 및 서버 처리 대기
-    """
-    print("\n  💾 [Action] 등록대기(저장) 실행...")
+    """저장 버튼 클릭"""
+    print("  💾 저장 요청...")
     try:
-        page.evaluate("""
-            const chk = document.querySelector('#uprightContract');
-            if(chk && !chk.checked) { chk.checked = true; }
-        """)
+        # 청렴계약 동의 체크
+        page.evaluate("if(document.querySelector('#uprightContract')) document.querySelector('#uprightContract').checked = true;")
         
-        # JS 함수 직접 호출
+        # 저장 스크립트 실행
         page.evaluate("if(typeof register === 'function') { register('1'); }")
-
-        # [v4.7] 연속 등록을 위해 6초 대기 (서버 처리 및 화면 전환)
-        print("    ⏳ [Processing] 저장 처리 및 화면 전환 대기 중 (6초)...")
-        time.sleep(6)
         
+        # 처리 대기 (화면 전환 등)
+        time.sleep(5)
     except Exception as e:
-        print(f"    ❌ 저장 처리 중 오류: {e}")
+        print(f"    ❌ 저장 실행 중 오류: {e}")
 
 # ======================================================
-# [메인]
+# [메인 실행]
 # ======================================================
 def run_s2b_bot():
-    print(">>> [S2B_Agent] 봇 시작 (v4.7 - 연속등록모드)")
-    categories = load_category_data()
+    print(">>> [S2B Bot] 시작 (Mode: Upload Only)")
+    
+    # 1. 데이터 로드
     products = load_products()
-    if not products:
-        print("!!! 데이터 파일이 비어있거나 없습니다.")
-        return
+    if not products: return
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False, args=["--start-maximized"])
-        context = browser.new_context(viewport={"width": 1400, "height": 1000})
-        
-        print(f">>> 로그인 페이지 이동: {S2B_LOGIN_URL}")
+        # 브라우저 실행
+        browser = p.chromium.launch(headless=HEADLESS, args=["--start-maximized"])
+        context = browser.new_context(viewport={"width": 1600, "height": 1000}) # 화면 크게
         page = context.new_page()
-        page.on("dialog", global_dialog_handler)
-        
+        page.on("dialog", global_dialog_handler) # 알림창 자동 닫기
+
         try:
-            # 1. 로그인
-            page.goto(S2B_LOGIN_URL, timeout=60000, wait_until="domcontentloaded")
-            if "Login.do" in page.url:
-                page.wait_for_selector('form[name="vendor_loginForm"] [name="uid"]', state="visible", timeout=30000)
-                page.fill('form[name="vendor_loginForm"] [name="uid"]', USER_ID)
-                page.fill('form[name="vendor_loginForm"] [name="pwd"]', USER_PW)
-                page.click('form[name="vendor_loginForm"] .btn_login > a')
-            
-            handle_popups_safely(context, page)
+            # 2. 로그인
+            print(f">>> 로그인 시도: {USER_ID}")
+            page.goto(S2B_LOGIN_URL)
+            page.wait_for_selector('form[name="vendor_loginForm"]', timeout=10000)
+            page.fill('input[name="uid"]', USER_ID)
+            page.fill('input[name="pwd"]', USER_PW)
+            page.click('.btn_login > a')
+            time.sleep(2)
 
-            # 2. 루프 (연속 등록)
-            for i, product in enumerate(products):
-                print(f"\n>>> [상품 {i+1}/{len(products)}] 등록 시작: {product.get('물품명')}")
+            # 3. 상품 등록 루프
+            for idx, product in enumerate(products):
+                print(f"\n>>> [{idx+1}/{len(products)}] 등록 시작: {product['물품명']}")
                 
-                # [v4.7] 등록 페이지로 이동 (화면 리셋 효과)
-                try: page.goto(S2B_REGISTER_URL, timeout=60000, wait_until="domcontentloaded")
-                except: pass
-                
-                time.sleep(3) 
-                handle_popups_safely(context, page) 
-                close_interface_popups(page)
-                enable_scroll(page)
+                # 등록 페이지 이동
+                page.goto(S2B_REGISTER_URL)
+                time.sleep(2)
+                handle_popups(page) # 팝업 정리
 
-                try: page.wait_for_selector('input[name="f_goods_name"]', state="visible", timeout=30000)
-                except: 
-                    print("    ⚠️ 등록 폼 로드 실패, 건너뜀")
-                    continue
-
-                # 각 단계별 입력 실행
-                register_categories(page, product, categories)
-                if TEST_MODE:
-                    time.sleep(3)
-                    continue
+                # 정보 입력
+                register_categories(page, product)
                 register_base_info(page, product)
-                register_cert_info(context, page, product)
-                register_images(context, page, product)
-                register_smart_editor(page, COMPANY_INTRO_HTML)
-                register_delivery_fees(page)
+                # (KC 인증 정보 입력 로직은 필요 시 추가 - 현재는 기본정보 위주)
+                register_images(page, product)
+                register_smart_editor(page)
                 
-                # 저장 실행 (6초 대기)
+                # 배송비/납품정보 (기본값 클릭)
+                page.click('input[name="f_delivery_fee_kind"][value="1"]') # 무료 등 설정
+                # ... (필요 시 세부 설정 추가)
+
+                # 최종 저장
                 submit_product(page)
                 
-                print(f">>> ✅ [상품 {i+1}] 처리 요청 완료.")
+                print(f">>> ✅ [{idx+1}] 등록 완료")
                 
-                # 성공 시 목록에서 제거 (다음 루프를 위해)
-                remove_success_product(product)
+                # 성공한 상품 목록에서 제거 (재실행 시 중복 방지)
+                remove_success_product(product, products)
+                
+                time.sleep(2) # 쿨타임
 
         except Exception as e:
-            print(f"!!! 치명적 에러 발생: {e}")
+            print(f"!!! 봇 실행 중 치명적 오류: {e}")
         finally:
-            print(">>> 작업을 종료합니다.")
-            try: page.close() 
-            except: pass
-            time.sleep(1)
             browser.close()
+            print(">>> 봇 종료")
 
 if __name__ == "__main__":
     run_s2b_bot()

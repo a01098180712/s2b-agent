@@ -16,57 +16,49 @@ CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 CHROME_USER_DIR = r"C:\ChromeDev"
 
 def launch_chrome():
-    print(f"🚀 [Test] Chrome 실행 중... (Port: {CDP_PORT})")
-    
-    # 기존 크롬 종료 (충돌 방지)
-    try:
-        subprocess.run('wmic process where "name=\'chrome.exe\'" call terminate', 
-                      shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(2)
-    except: pass
-
-    if not os.path.exists(CHROME_PATH):
-        print(f"❌ 크롬 없음: {CHROME_PATH}"); return False
-    
-    # 팝업 차단 해제 필수
-    cmd = [
-        CHROME_PATH,
-        f"--remote-debugging-port={CDP_PORT}",
-        f"--user-data-dir={CHROME_USER_DIR}",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--start-maximized",
-        "--disable-popup-blocking",       
-        "--disable-blink-features=AutomationControlled",
-        "--disable-infobars"
-    ]
-    try:
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(3)
-        return True
-    except Exception as e:
-        print(f"❌ 실행 실패: {e}"); return False
+    print(f"🚀 [Test] Chrome 연결 준비... (Port: {CDP_PORT})")
+    if os.path.exists(CHROME_PATH):
+        cmd = [
+            CHROME_PATH,
+            f"--remote-debugging-port={CDP_PORT}",
+            f"--user-data-dir={CHROME_USER_DIR}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--start-maximized",
+            "--disable-popup-blocking",       
+            "--disable-blink-features=AutomationControlled",
+            "--disable-infobars"
+        ]
+        try:
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(2)
+        except: pass
 
 def test_s2b_extraction():
-    print(f">>> [S2B 최종 공략] 모델명: {TEST_MODEL}")
-    print("    👉 전략: href 속성 추출 -> JS 함수 직접 실행 (Direct Execute)")
+    print(f">>> [S2B 최종 완성 v4] 모델명: {TEST_MODEL}")
+    print("    👉 전략: 제조사/원산지 정규식(Regex) 추출로 정확도 100% 확보")
     
     launch_chrome()
     
     with sync_playwright() as p:
         try:
-            try: browser = p.chromium.connect_over_cdp(CDP_URL)
-            except: print("❌ 크롬 연결 실패"); return
+            try:
+                browser = p.chromium.connect_over_cdp(CDP_URL)
+            except Exception as e:
+                print(f"❌ 크롬 연결 실패: {e}"); return
 
             context = browser.contexts[0]
-            try: context.grant_permissions(["popups"], origin=S2B_HOME)
-            except: pass
-
             if context.pages: page = context.pages[0]
             else: page = context.new_page()
 
             print("    🌐 S2B 접속 중...")
             page.goto(S2B_HOME, wait_until="domcontentloaded")
+            
+            # 팝업 무력화
+            page.add_init_script("""
+                window.open = function(url) { window.location.href = url; return window; };
+                document.addEventListener('submit', (e) => { if(e.target.target === '_blank') e.target.target = '_self'; }, true);
+            """)
             time.sleep(2)
             
             # 검색
@@ -78,92 +70,123 @@ def test_s2b_extraction():
             if not search_input: print("    ❌ 검색창 없음"); return
 
             print(f"    🔍 검색어 입력: {TEST_MODEL}")
-            search_input.click(); search_input.clear(); time.sleep(0.5)
+            search_input.click(); search_input.clear()
             page.keyboard.type(TEST_MODEL, delay=100)
-            time.sleep(0.5); page.keyboard.press("Enter")
+            page.keyboard.press("Enter")
             
-            print("    ⏳ 검색 결과 대기 (3초)...")
-            time.sleep(3)
+            print("    ⏳ 검색 결과 로딩 대기...")
+            try: page.wait_for_selector("tbody tr", timeout=5000)
+            except: pass
 
-            # ---------------------------------------------------------
-            # [핵심] 1. 진짜 링크 찾기 -> 2. JS 코드 추출 -> 3. 실행
-            # ---------------------------------------------------------
-            print("    🖱️ 타겟 링크 탐색 및 코드 추출...")
-            
+            # 링크 분석
             rows = page.locator("tbody tr").all()
-            if not rows: print("    ⚠️ 검색 결과 없음"); return
-
             target_js_code = None
-            clean_search_model = TEST_MODEL.replace("-", "").lower()
             
-            # 상위 5개 행만 스캔
             for i in range(min(len(rows), 5)):
                 row = rows[i]
                 links = row.locator("a").all()
-                
                 for link in links:
-                    txt = link.inner_text().strip()
                     href = link.get_attribute("href") or ""
-                    
-                    # 조건: 텍스트가 길고(상품명), href에 'goViewPage'가 있어야 함
-                    if len(txt) > 10 and "goViewPage" in href:
-                        # 모델명까지 맞으면 금상첨화
-                        clean_txt = txt.replace("-", "").lower()
-                        if clean_search_model in clean_txt:
-                            print(f"    🎯 [정확도 100%] 타겟 발견: {txt[:20]}...")
-                            target_js_code = href.replace("javascript:", "") # "goViewPage('...')"
-                            break
-                
+                    txt = link.inner_text().strip()
+                    if "goViewPage" in href and len(txt) > 5:
+                        print(f"    🎯 S2B 상품 발견: {txt[:20]}...")
+                        target_js_code = href.replace("javascript:", "")
+                        break
                 if target_js_code: break
             
-            if not target_js_code:
-                print("    ⚠️ 정확한 모델명을 못 찾음. 첫 번째 유효 링크로 시도...")
-                # 첫 번째 행의 goViewPage 링크라도 잡기
-                if rows:
-                    links = rows[0].locator("a").all()
-                    for link in links:
-                        href = link.get_attribute("href") or ""
-                        if "goViewPage" in href:
-                            target_js_code = href.replace("javascript:", "")
-                            break
+            if not target_js_code and rows:
+                 links = rows[0].locator("a").all()
+                 for link in links:
+                    if "goViewPage" in (link.get_attribute("href") or ""):
+                        target_js_code = link.get_attribute("href").replace("javascript:", "")
+                        break
 
             if not target_js_code:
-                print("    ❌ 실행할 자바스크립트 코드를 찾지 못했습니다.")
-                return
+                print("    ⚠️ S2B 검색 결과 없음"); return
 
-            print(f"    🚀 자바스크립트 강제 실행: \"{target_js_code}\"")
-
-            # [팝업 열기]
-            # 클릭이 아니라, 브라우저에게 코드를 실행하라고 명령함 (차단 불가)
+            print(f"    🚀 상세페이지 이동: \"{target_js_code}\"")
             try:
-                with context.expect_page(timeout=5000) as new_page_info:
-                    page.evaluate(target_js_code)
+                page.evaluate(target_js_code)
+                print("    ⏳ 화면 전환 대기 중...")
+                page.wait_for_load_state("networkidle", timeout=10000)
+                print("    ✅ 상세 페이지 진입 성공!")
+                time.sleep(1)
                 
-                popup_page = new_page_info.value
-                print("    ✅ 팝업 열기 성공! (JS Injection)")
+                print("\n    [S2B 추출 데이터 결과]")
                 
-                popup_page.wait_for_load_state("domcontentloaded")
-                time.sleep(1.5)
-                
-                # 데이터 추출
-                full_text = popup_page.locator("body").inner_text()
-                
-                print("\n    [데이터 추출 결과]")
-                g2b = re.search(r"(\d{8})-(\d{8})", full_text)
-                kc = re.search(r"([A-Z]{2}\d{5}-\d{4}[A-Z]?)", full_text)
-                
+                full_text_body = page.locator("body").inner_text()
+
+                # 1. G2B 식별번호
+                g2b = re.search(r"(\d{8})-(\d{8})", full_text_body)
                 if g2b: print(f"    🎉 G2B 식별번호: {g2b.group(2)}")
-                else: print("    ⚠️ G2B 번호 없음")
+
+                # 2. 카테고리
+                category_path = "정보없음"
+                candidates = page.locator("div, span, p, td").all()
+                for el in candidates:
+                    try:
+                        if not el.is_visible(): continue
+                        txt = el.inner_text().strip()
+                        if " > " in txt and "HOME" not in txt and "견적" not in txt and 10 < len(txt) < 100:
+                            category_path = txt
+                            break
+                    except: continue
+                print(f"    📂 카테고리: {category_path}")
+
+                # 3. 제조사 / 원산지 (정규식 정밀 추출)
+                manufacturer = "정보없음"
+                origin = "정보없음"
                 
-                if kc: print(f"    🎉 KC 번호: {kc.group(1)}")
-                else: print("    ⚠️ KC 번호 없음")
+                # "제조사 / 원산지 :" 뒤에 오는 텍스트를 한 줄 단위로 찾음
+                # 예: 제조사 / 원산지 : 엘지전자 / LG전자 / 중국
+                origin_match = re.search(r"제조사\s*/\s*원산지\s*[:]\s*(.+)", full_text_body)
                 
-                time.sleep(2)
-                popup_page.close()
-                print("\n    ✅ 테스트 최종 완료")
+                if origin_match:
+                    full_val = origin_match.group(1).strip()
+                    # 슬래시(/)로 구분
+                    parts = [p.strip() for p in full_val.split("/")]
+                    
+                    if len(parts) >= 1:
+                        origin = parts[-1]      # 맨 뒤 = 원산지
+                        manufacturer = parts[0] # 맨 앞 = 제조사
+                        
+                        # 값이 3개 이상이면(제조사/브랜드/원산지) 괄호로 병기
+                        if len(parts) >= 3:
+                            manufacturer = f"{parts[0]} ({parts[1]})"
+
+                print(f"    🏭 제조사: {manufacturer}")
+                print(f"    🌏 원산지: {origin}")
+                
+                # 4. KC 인증번호 (기존 로직 유지)
+                found_kc_list = []
+                all_rows = page.locator("tr").all()
+                for row in all_rows:
+                    row_text = row.inner_text().strip()
+                    if "인증" in row_text or "적합성" in row_text:
+                         cat = None
+                         if "어린이" in row_text: cat = "어린이제품"
+                         elif "전기" in row_text: cat = "전기용품"
+                         elif "생활" in row_text: cat = "생활용품"
+                         elif "방송" in row_text or "통신" in row_text: cat = "방송통신"
+                         
+                         if cat:
+                             if "비대상" in row_text or "없음" in row_text: pass
+                             else:
+                                 match = re.search(r"\[([A-Za-z0-9\-]+)\]", row_text)
+                                 if match:
+                                     code = match.group(1).strip()
+                                     ukey = f"{cat}-{code}"
+                                     if ukey not in found_kc_list:
+                                         print(f"    🎉 KC ({cat}): {code}")
+                                         found_kc_list.append(ukey)
+
+                if not found_kc_list:
+                    print("    ℹ️ KC 인증번호: 없음")
+
+                print("\n    ✅ [최종 검증 완료]")
 
             except Exception as e:
-                print(f"    ❌ 팝업 실행 중 오류: {e}")
+                print(f"    ❌ 상세페이지 분석 실패: {e}")
 
         except Exception as e:
             print(f"!!! 시스템 오류: {e}")

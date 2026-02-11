@@ -1,34 +1,38 @@
+import os
 from google import genai
+from dotenv import load_dotenv
 
-# ==========================================
-# 1. 여기에 발급받은 Gemini API Key를 입력하세요
-API_KEY = "AIzaSyB_tIBEd8oFlLVco-pHiKU4yhtsbvsqtCs"
-# ==========================================
+# 1. 환경 변수 로드 (.env 파일에 API_KEY가 저장되어 있어야 합니다)
+load_dotenv()
+API_KEY = os.getenv("GEMINI_API_KEY") # 실제 사용하는 환경변수명으로 확인 필요
 
-def check_my_quota():
-    print("🔍 [Gemini API] 사용 한도(Quota) 및 할당량 확인 중...\n")
+def test_gemini_connection():
+    print("🚀 [Gemini API] 연결 테스트 시작...")
     
     try:
+        # 2. 최신 클라이언트 설정
         client = genai.Client(api_key=API_KEY)
         
-        # 현재 내 API 키가 사용할 수 있는 모델 리스트와 설정값 가져오기
-        # 주로 사용하시는 gemini-1.5-pro와 gemini-1.5-flash 정보를 타겟팅합니다.
-        target_models = ['models/gemini-1.5-pro', 'models/gemini-1.5-flash']
+        # 3. 간단한 텍스트 생성 요청
+        # 모델명은 'gemini-1.5-flash'가 속도가 빨라 테스트용으로 적합합니다.
+        # 필요 시 'gemini-1.5-pro'로 변경 가능합니다.
+        response = client.models.generate_content(
+            model="gemini-2.0-flash", 
+            contents="안녕? 너는 누구야? 짧게 대답해줘."
+        )
         
-        print(f"{'모델명':<25} | {'분당 요청수(RPM)':<15} | {'분당 토큰수(TPM)':<15}")
-        print("-" * 60)
-
-        for model in client.models.list():
-            if model.name in target_models:
-                # 각 모델의 할당량 정보 출력
-                # 기본적으로 무료 티어(Free)와 유료 티어(Pay-as-you-go)에 따라 수치가 다릅니다.
-                print(f"{model.name:<25} | {model.base_model_id:<15} | {model.supported_generation_methods}")
-                
-        print("\n💡 참고: 상세한 일일 누적 사용량과 잔여량은")
-        print("   https://aistudio.google.com/app/plan 에서 실시간 그래프로 확인하는 것이 가장 정확합니다.")
+        # 4. 결과 출력
+        print("\n✅ API 응답 성공!")
+        print(f"🤖 응답 내용: {response.text}")
+        print("-" * 30)
+        print(f"📊 사용량 정보: {response.usage_metadata}")
 
     except Exception as e:
-        print(f"❌ 정보 확인 실패: {str(e)}")
+        print("\n❌ API 연결 실패!")
+        print(f"에러 내용: {str(e)}")
 
 if __name__ == "__main__":
-    check_my_quota()
+    if not API_KEY:
+        print("❌ 오류: .env 파일에서 API_KEY를 찾을 수 없습니다.")
+    else:
+        test_gemini_connection()

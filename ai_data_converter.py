@@ -30,16 +30,14 @@ if not API_KEY:
 
 client = genai.Client(api_key=API_KEY)
 PRIMARY_MODEL = "gemini-2.0-flash" 
-FALLBACK_MODEL = "gemini-1.5-flash"
 
 # ======================================================
-# [모듈 1] 데이터 유틸리티 (RAG 검색 엔진 탑재)
+# [모듈 1] 데이터 유틸리티
 # ======================================================
 class DataUtils:
     def __init__(self):
         self.raw_categories = self._load_json(CATEGORY_FILE)
         self.enforcer_pattern = re.compile(r"[^가-힣a-zA-Z0-9\s\.\,\-\_\/\(\)\[\]]")
-        # [핵심] 전체 카테고리 경로를 검색 가능한 형태로 평탄화(Flatten)
         self.flat_categories = self._flatten_categories()
         
     def _load_json(self, filepath):
@@ -49,93 +47,44 @@ class DataUtils:
         return {}
 
     def _flatten_categories(self):
-        """모든 카테고리 경로를 '텍스트'와 '코드' 매핑으로 변환"""
         flat_list = []
         cats = self.raw_categories
-        
         if 'category1' in cats:
             for c1 in cats['category1']:
-                c1_txt = c1['text']
-                c1_val = c1['value']
-                
-                # 2차
+                c1_txt = c1['text']; c1_val = c1['value']
                 if 'category2' in cats and c1_val in cats['category2']:
                     for c2 in cats['category2'][c1_val]:
-                        c2_txt = c2['text']
-                        c2_val = c2['value']
-                        
-                        # 3차
+                        c2_txt = c2['text']; c2_val = c2['value']
                         key = f"{c1_val}_{c2_val}"
                         if 'category3' in cats and key in cats['category3']:
                             for c3 in cats['category3'][key]:
                                 full_path = f"{c1_txt} > {c2_txt} > {c3['text']}"
-                                flat_list.append({
-                                    "path": full_path,
-                                    "c1": c1_val, "c1_name": c1_txt,
-                                    "c2": c2_val, "c2_name": c2_txt,
-                                    "c3": c3['value'], "c3_name": c3['text']
-                                })
+                                flat_list.append({"path": full_path, "c1": c1_val, "c2": c2_val, "c3": c3['value']})
                         else:
-                            # 3차가 없는 경우 (2차까지만 존재)
                             full_path = f"{c1_txt} > {c2_txt}"
-                            flat_list.append({
-                                "path": full_path,
-                                "c1": c1_val, "c1_name": c1_txt,
-                                "c2": c2_val, "c2_name": c2_txt,
-                                "c3": None, "c3_name": None
-                            })
+                            flat_list.append({"path": full_path, "c1": c1_val, "c2": c2_val, "c3": None})
                 else:
-                    # 1차만 있는 경우
-                    flat_list.append({
-                        "path": c1_txt,
-                        "c1": c1_val, "c1_name": c1_txt,
-                        "c2": None, "c2_name": None,
-                        "c3": None, "c3_name": None
-                    })
-        print(f"📂 [System] 전체 카테고리 경로 {len(flat_list)}개 인덱싱 완료.")
+                    flat_list.append({"path": c1_txt, "c1": c1_val, "c2": None, "c3": None})
         return flat_list
 
     def search_relevant_categories(self, query, top_k=50):
-        """
-        [검색 엔진] 상품명+카테고리명(query)과 연관된 카테고리 Top-K 추출
-        단순 텍스트 매칭 점수 기반
-        """
         query_parts = set(query.replace(">", " ").split())
         scored_cats = []
-        
         for item in self.flat_categories:
             score = 0
-            path_str = item['path']
-            
-            # 검색어가 경로에 포함되면 점수 부여
             for q in query_parts:
-                if len(q) > 1 and q in path_str: # 1글자 제외
-                    score += 1
-            
-            # 정확도를 위해 2차, 3차 카테고리명 자체에 가중치
-            if score > 0:
-                scored_cats.append((score, item))
-        
-        # 점수 내림차순 정렬
+                if len(q) > 1 and q in item['path']: score += 1
+            if score > 0: scored_cats.append((score, item))
         scored_cats.sort(key=lambda x: x[0], reverse=True)
-        
-        # 결과 반환 (없으면 상위 무작위 반환 방지를 위해 빈 리스트 또는 기본값 고려)
         results = [x[1] for x in scored_cats[:top_k]]
-        
-        # 만약 검색 결과가 너무 적으면, '기타'나 '전자제품' 등 기본 카테고리 일부 추가
         if len(results) < 5:
              defaults = [x for x in self.flat_categories if "기타" in x['path'] or "전자" in x['path']]
              results.extend(defaults[:10])
-             
         return results
 
     def find_code_by_exact_path(self, path_str):
-        """AI가 선택한 경로 텍스트로 코드를 찾음"""
         for item in self.flat_categories:
-            # 공백/특수문자 무시하고 비교
-            if item['path'].replace(" ", "") == path_str.replace(" ", ""):
-                return item
-        # 못 찾으면 유사도 검색
+            if item['path'].replace(" ", "") == path_str.replace(" ", ""): return item
         matches = difflib.get_close_matches(path_str, [x['path'] for x in self.flat_categories], n=1, cutoff=0.6)
         if matches:
             for item in self.flat_categories:
@@ -149,17 +98,44 @@ class DataUtils:
         text = self.enforcer_pattern.sub(" ", text)
         return re.sub(r'\s+', ' ', text).strip()
 
-    def clean_model_name(self, text):
-        if not text or text == "없음": return "없음"
-        if "/" in text:
-            parts = text.split("/")
-            for part in reversed(parts):
-                clean_part = part.strip()
-                if re.search(r'[A-Z]', clean_part) and re.search(r'[0-9]', clean_part):
-                    return clean_part
-        match = re.search(r'[A-Za-z0-9-]{5,}', text)
-        if match: return match.group(0)
-        return text
+    def extract_model_from_title(self, title):
+        """[수정됨] 제목에서 모델명 패턴 정밀 추출"""
+        if not title: return "없음"
+        
+        # 1. 괄호 안 패턴 (예: (15U560)) 우선 확인
+        match_paren = re.search(r'\(([A-Za-z0-9-]{4,})\)', title)
+        if match_paren:
+            candidate = match_paren.group(1)
+            # 숫자가 포함되어 있고 한글이 없으면 모델명으로 간주
+            if re.search(r'\d', candidate) and not re.search(r'[가-힣]', candidate): 
+                return candidate
+
+        # 2. 토큰 단위 탐색 (순방향 탐색)
+        # "LG 울트라PC 15U560 ..." -> "15U560"을 찾음
+        tokens = title.split()
+        for token in tokens:
+            # 한글이 포함된 토큰은 스펙일 확률이 높음 (예: "15.6인치", "6세대", "윈도우10") -> 제외
+            if re.search(r'[가-힣]', token):
+                continue
+                
+            # 특수문자 제거 (하이픈, 점 제외)
+            clean_token = re.sub(r'[^a-zA-Z0-9-]', '', token)
+            
+            # 조건 1: 길이가 4자 이상일 것 (i5, PC 등 제외)
+            if len(clean_token) < 4: continue
+            
+            # 조건 2: 제외 단어 리스트
+            if clean_token.lower() in ['2024', '2025', 'best', 'sale', 'new', 'notebook', 'laptop']: continue
+            
+            # 조건 3: 영문 + 숫자 혼합 (가장 강력한 모델명 특징) -> 예: 15U560
+            if re.search(r'[A-Za-z]', clean_token) and re.search(r'[0-9]', clean_token):
+                return clean_token
+                
+            # 조건 4: 하이픈이 포함된 긴 숫자 코드 -> 예: SIF-1214
+            if '-' in clean_token and len(clean_token) > 5:
+                return clean_token
+
+        return "없음"
 
     def parse_kc_codes(self, kc_string):
         result = {"KC_어린이_번호": "", "KC_전기_번호": "", "KC_생활_번호": "", "KC_방송_번호": ""}
@@ -234,7 +210,7 @@ class ImageProcessor:
         return filepath
 
 # ======================================================
-# [모듈 3] 데이터 컨버터 (Dynamic RAG)
+# [모듈 3] 데이터 컨버터 (메인)
 # ======================================================
 class DataConverter:
     def __init__(self):
@@ -242,53 +218,46 @@ class DataConverter:
         self.img_processor = ImageProcessor()
 
     def create_prompt(self, raw_item, candidate_list):
-        # 검색된 후보 리스트를 텍스트로 변환
         candidates_text = "\n".join([f"- {c['path']}" for c in candidate_list])
-        
         return f"""
         당신은 S2B 상품 등록 전문가입니다.
-        입력 상품에 가장 적합한 카테고리 경로를 [후보 리스트] 중에서 단 하나만 선택하세요.
+        1. [카테고리 후보 리스트] 중 가장 적합한 경로 하나를 선택하세요.
+        2. 상품명을 정제하세요.
+        3. 모델명을 상품명이나 입력된 정보에서 반드시 추출하세요. (없으면 상품명에서 유추)
 
         ### [입력 상품]
         - 상품명: {raw_item.get('name')}
+        - 입력된 모델명: {raw_item.get('model')}
         - 가격: {raw_item.get('price')}
         - 원본 카테고리: {raw_item.get('category')}
 
-        ### [카테고리 후보 리스트 (이 중에서 선택 필독)]
+        ### [카테고리 후보 리스트]
         {candidates_text}
-
-        ### [지시사항]
-        1. 위 후보 리스트 중 상품과 가장 일치하는 **전체 경로(텍스트)**를 그대로 출력하세요.
-        2. 물품명과 규격도 정제하세요.
 
         ### [출력 포맷 (JSON Only)]
         {{
-            "물품명": "정제된 상품명",
+            "물품명": "정제된 상품명 (모델명 제외)",
             "규격": "정제된 규격",
-            "선택한_카테고리_경로": "위 리스트에 있는 경로 텍스트 그대로 복사"
+            "추출된_모델명": "추출한 모델명",
+            "선택한_카테고리_경로": "위 리스트의 경로 복사"
         }}
         """
 
     def process(self):
-        print(f"🚀 [Converter v9.0] 전체 카테고리 검색(RAG) 모드 시작...")
-        
+        print(f"🚀 [Converter v9.4] 모델명 추출 로직 수정 완료...")
         try:
-            with open(INPUT_FILE, 'r', encoding='utf-8') as f:
-                raw_data = json.load(f)
+            with open(INPUT_FILE, 'r', encoding='utf-8') as f: raw_data = json.load(f)
         except:
-            print("❌ 원본 데이터가 없습니다.")
-            return
+            print("❌ 원본 데이터가 없습니다."); return
 
         final_result = []
 
         for idx, item in enumerate(raw_data):
             print(f"\n🔹 [{idx+1}/{len(raw_data)}] 처리 중: {item.get('name')[:15]}...")
             
-            # 1. [검색] 관련 카테고리 후보 추출 (상품명 + 원본카테고리 활용)
             query = f"{item.get('name')} {item.get('category')}"
             candidates = self.utils.search_relevant_categories(query, top_k=50)
             
-            # 2. [AI] 후보 중 최적 선택
             try:
                 response = client.models.generate_content(
                     model=PRIMARY_MODEL,
@@ -297,34 +266,39 @@ class DataConverter:
                 )
                 ai_data = json.loads(response.text)
                 if isinstance(ai_data, list): ai_data = ai_data[0]
-            except Exception as e:
-                print(f"    ⚠️ AI 변환 오류: {e}")
-                ai_data = {"물품명": item.get('name'), "규격": item.get('name'), "선택한_카테고리_경로": ""}
+            except:
+                ai_data = {"물품명": item.get('name'), "규격": item.get('name'), "추출된_모델명": "없음", "선택한_카테고리_경로": ""}
 
-            # 3. [매핑] 선택된 경로 -> 코드 변환
             selected_path = ai_data.get('선택한_카테고리_경로', '')
             cat_info = self.utils.find_code_by_exact_path(selected_path)
-            
-            # 매핑 실패 시 후보 1순위 사용 (안전장치)
-            if not cat_info and candidates:
-                cat_info = candidates[0]
-                print(f"    ⚠️ AI 선택 경로 매핑 실패. 검색 1순위로 대체: {cat_info['path']}")
+            if not cat_info and candidates: cat_info = candidates[0]
+            if not cat_info: cat_info = {"c1": None, "c2": None, "c3": None, "path": "매핑실패"}
 
-            if not cat_info: # 진짜 아무것도 못 찾았을 때
-                cat_info = {"c1": None, "c2": None, "c3": None, "path": "매핑실패"}
-
-            # 데이터 정제
+            # [모델명 결정 로직 - 우선순위 조정]
+            ai_model = ai_data.get('추출된_모델명', '없음')
+            manual_model = self.utils.extract_model_from_title(item.get('name'))
             raw_model = item.get('model', '없음')
-            final_model = self.utils.clean_model_name(raw_model)
+
+            final_model = "없음"
+            # 1순위: 파이썬 정규식 추출 (가장 정확함)
+            if manual_model != "없음": 
+                final_model = manual_model
+            # 2순위: AI 추출값
+            elif ai_model != "없음" and len(ai_model) > 3: 
+                final_model = ai_model
+            # 3순위: 원본 데이터
+            elif raw_model != "없음": 
+                final_model = raw_model.replace("상세설명참조", "").strip()
             
+            if not final_model or len(final_model) < 2: final_model = "없음"
+            
+            print(f"    🏷️ 모델명 확정: {final_model}")
+
             raw_maker = item.get('maker', '')
-            final_maker = raw_maker if raw_maker and "상세" not in raw_maker and "협력" not in raw_maker else "협력업체"
+            final_maker = raw_maker if raw_maker and "상세" not in raw_maker else "협력업체"
+            final_origin = item.get('origin', '중국') if item.get('origin') else "중국"
 
-            raw_origin = item.get('origin', '')
-            final_origin = raw_origin if raw_origin and "상세" not in raw_origin else "중국"
-
-            raw_kc = item.get('kc', '')
-            kc_info = self.utils.parse_kc_codes(raw_kc)
+            kc_info = self.utils.parse_kc_codes(item.get('kc', ''))
 
             clean_name = self.utils.clean_text_strict(ai_data.get('물품명', item.get('name')))
             clean_spec = self.utils.clean_text_strict(ai_data.get('규격', ''))
@@ -339,10 +313,9 @@ class DataConverter:
                 "카테고리1": cat_info.get('c1'),
                 "카테고리2": cat_info.get('c2'),
                 "카테고리3": cat_info.get('c3'),
-                "카테고리_전체경로": cat_info.get('path'), # 검증용
-                
+                "카테고리_전체경로": cat_info.get('path'),
                 "제시금액": int(item.get('price', 0)),
-                "모델명": final_model,
+                "모델명": final_model, 
                 "제조사명": final_maker,
                 "원산지": final_origin,
                 "기본이미지1": main_img,
@@ -353,9 +326,7 @@ class DataConverter:
                 "KC_생활_번호": kc_info["KC_생활_번호"],
                 "KC_방송_번호": kc_info["KC_방송_번호"]
             }
-            
             final_result.append(final_item)
-            print(f"    ✅ 매핑결과: {cat_info.get('path')}")
 
         with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
             json.dump(final_result, f, ensure_ascii=False, indent=4)

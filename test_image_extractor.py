@@ -1,70 +1,117 @@
 import time
+import os
+import subprocess
 import requests
 from io import BytesIO
 from PIL import Image
 from playwright.sync_api import sync_playwright
 
-# 테스트할 URL
+# ======================================================
+# [설정]
+# ======================================================
 TEST_URL = "https://www.coupang.com/vp/products/8610798143?itemId=19665760789&vendorItemId=86771432026"
-CDP_URL = "http://127.0.0.1:9222"
-OUTPUT_FILENAME = "test_merged_result.jpg"
+CDP_PORT = 9222
+CDP_URL = f"http://127.0.0.1:{CDP_PORT}"
+OUTPUT_FILENAME = "merged_detail_v15.jpg"
 
-def merge_images_vertical(image_urls):
-    """
-    URL 리스트를 받아 다운로드 후 세로로 긴 하나의 이미지로 병합합니다.
-    """
-    print(f"\n🧩 [Merger] {len(image_urls)}개의 조각 이미지를 병합합니다...")
-    
-    images = []
-    
-    # 1. 이미지 다운로드
-    for i, url in enumerate(image_urls):
-        try:
-            # 프로토콜 처리 (//로 시작하는 경우 https 붙임)
-            if url.startswith("//"): url = "https:" + url
-            
-            response = requests.get(url, timeout=5)
-            if response.status_code == 200:
-                img = Image.open(BytesIO(response.content)).convert("RGB")
-                images.append(img)
-                print(f"   ⬇️ 다운로드 성공 [{i+1}/{len(image_urls)}]: {url[:60]}...")
-            else:
-                print(f"   ❌ 다운로드 실패: {url}")
-        except Exception as e:
-            print(f"   ⚠️ 에러 발생: {e}")
+CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+CHROME_USER_DIR = r"C:\ChromeDev"
 
-    if not images:
-        print("❌ 병합할 이미지가 없습니다.")
+# ======================================================
+# [기능 1] 크롬 자동 실행
+# ======================================================
+def ensure_chrome_running():
+    print(f"♻️ [System] Chrome 상태 점검...")
+    try:
+        requests.get(f"{CDP_URL}/json/version", timeout=1)
+        print("    ✅ Chrome이 실행 중입니다.")
+        return
+    except:
+        print("    ℹ️ Chrome 실행 시작...")
+
+    if not os.path.exists(CHROME_PATH):
+        print(f"    ❌ 오류: 크롬 경로 확인 필요: {CHROME_PATH}")
         return
 
-    # 2. 캔버스 크기 계산 (폭은 최대값, 높이는 합산)
-    max_width = max(img.width for img in images)
-    total_height = sum(img.height for img in images)
-    
-    print(f"   📏 최종 이미지 크기: {max_width}x{total_height}px")
+    cmd = [
+        CHROME_PATH,
+        f"--remote-debugging-port={CDP_PORT}",
+        f"--user-data-dir={CHROME_USER_DIR}",
+        "--no-first-run",
+        "--window-size=1920,1080"
+    ]
+    try:
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(3)
+    except Exception as e:
+        print(f"    ❌ 실행 실패: {e}")
 
-    # 3. 캔버스 생성 및 붙이기
+# ======================================================
+# [기능 2] 이미지 병합 (정밀 검증)
+# ======================================================
+def merge_images_vertical(image_urls):
+    print(f"\n🧩 [Merger] 수집된 {len(image_urls)}개의 URL 정밀 검증 중...")
+    valid_images = []
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://www.coupang.com/"
+    }
+    
+    for i, url in enumerate(image_urls):
+        try:
+            if url.startswith("//"): url = "https:" + url
+            
+            response = requests.get(url, headers=headers, timeout=5)
+            if response.status_code == 200:
+                img = Image.open(BytesIO(response.content)).convert("RGB")
+                
+                # [Python 필터링]
+                # 가로 400px 이상 & 세로 30px 이상 (본문 이미지 기준)
+                if img.width >= 400 and img.height >= 30:
+                    valid_images.append(img)
+                    print(f"   ✅ [통과] {url[-30:]} ({img.width}x{img.height})")
+                else:
+                    # 너무 작은 이미지는 탈락 (아이콘 등)
+                    pass 
+            else:
+                print(f"   ⚠️ 다운로드 실패({response.status_code}): {url[-30:]}")
+        except: pass
+
+    if not valid_images:
+        print("❌ 병합할 유효한 이미지가 없습니다.")
+        return
+
+    # 캔버스 생성
+    max_width = max(img.width for img in valid_images)
+    total_height = sum(img.height for img in valid_images)
+    
+    print(f"   📏 최종 캔버스: {max_width}x{total_height}px (총 {len(valid_images)}장)")
+    
     merged_img = Image.new('RGB', (max_width, total_height), (255, 255, 255))
     y_offset = 0
-    for img in images:
-        # 폭이 다르면 중앙 정렬 또는 좌측 정렬 (여기선 좌측)
-        # 만약 리사이징이 필요하면: img = img.resize((max_width, int(img.height * max_width / img.width)))
+    for img in valid_images:
+        if img.width != max_width:
+            new_height = int(img.height * (max_width / img.width))
+            img = img.resize((max_width, new_height), Image.LANCZOS)
+        
         merged_img.paste(img, (0, y_offset))
         y_offset += img.height
 
-    # 4. 저장
     merged_img.save(OUTPUT_FILENAME, quality=90)
-    print(f"\n✅ [Success] 병합 완료! 파일을 확인하세요: {OUTPUT_FILENAME}")
-    print(f"   (이 파일이 S2B에 등록될 최종 결과물입니다)")
+    print(f"\n✅ [성공] 저장 완료: {OUTPUT_FILENAME}")
 
-
-def test_image_extraction_and_merge():
-    print(f"🧪 [Test V8] 상세 이미지 추출 및 병합(Merge) 테스트")
+# ======================================================
+# [메인] V15 로직 (좌표 기반 스마트 스캔)
+# ======================================================
+def test_v15_smart_scan():
+    print(f"🧪 [Test V15] 좌표 기반 스마트 스캔 (컨테이너 무관)")
+    ensure_chrome_running()
     print(f"🔗 URL: {TEST_URL}")
 
-    # 크롬이 켜져있다고 가정 (CDP 연결)
     with sync_playwright() as p:
         try:
+            print(f"🔌 Chrome 연결 중...")
             browser = p.chromium.connect_over_cdp(CDP_URL)
             context = browser.contexts[0]
             if context.pages: page = context.pages[0]
@@ -74,23 +121,21 @@ def test_image_extraction_and_merge():
                 page.goto(TEST_URL, wait_until="domcontentloaded")
                 time.sleep(2)
 
-            # ---------------------------------------------------------
-            # [Step 1] 버튼 클릭 및 스크롤 (V7 로직)
-            # ---------------------------------------------------------
-            print("    🔍 '상품정보 더보기' 버튼 클릭 시도...")
-            clicked = False
+            # 1. 버튼 클릭 (여러 선택자 시도)
+            print("    🔍 '더보기' 버튼 클릭 시도...")
             try:
-                # 텍스트 또는 클래스로 버튼 찾기
+                # 텍스트, 클래스 등 다양하게 시도
                 btn = page.locator("text='상품정보 더보기'").or_(page.locator(".product-detail-etc-view-btn")).first
                 if btn.is_visible():
                     btn.click(force=True)
-                    clicked = True
-                    print("    🖱️ 버튼 클릭 완료. 3초 대기...")
+                    print("    🖱️ 버튼 클릭 완료")
                     time.sleep(3)
+                else:
+                    print("    ℹ️ 버튼이 이미 눌렸거나 안 보입니다.")
             except: pass
-            
-            # 스크롤 다운
-            print("    📜 이미지 로딩 스크롤 진행 중...")
+
+            # 2. 스크롤 (로딩 유도)
+            print("    📜 전체 스크롤 (이미지 로딩)...")
             page.evaluate("""async () => {
                 await new Promise((resolve) => {
                     let totalHeight = 0;
@@ -99,65 +144,72 @@ def test_image_extraction_and_merge():
                         const scrollHeight = document.body.scrollHeight;
                         window.scrollBy(0, distance);
                         totalHeight += distance;
-                        if(totalHeight >= scrollHeight || totalHeight > 50000){
+                        if(totalHeight >= scrollHeight){
                             clearInterval(timer);
                             resolve();
                         }
-                    }, 50);
+                    }, 100);
                 });
             }""")
-            time.sleep(2)
+            time.sleep(3)
 
-            # ---------------------------------------------------------
-            # [Step 2] 이미지 URL 수집 (정밀 타겟팅)
-            # ---------------------------------------------------------
-            print("    📸 이미지 URL 수집 중...")
-            detail_images = []
+            # 3. [핵심] 좌표 기반 이미지 수집 (Smart Scan)
+            print("    📸 스마트 스캔 중 (본문 위치 이미지 선별)...")
             
-            # 1순위: 판매자 직접 등록 이미지 (#vendorInventory) - 보통 이것만 있으면 됨
-            # 2순위: 기본 상세 설명 (#productDetail)
-            target_ids = ["#vendorInventory", "#productDetail", ".product-detail-content-border"]
-            
-            for target in target_ids:
-                if page.locator(target).count() > 0:
-                    # 해당 영역 안의 이미지들
-                    imgs = page.locator(f"{target} img").all()
-                    print(f"       👉 [{target}] 영역에서 {len(imgs)}개 발견")
+            raw_urls = page.evaluate("""() => {
+                const results = [];
+                const imgs = document.querySelectorAll('img');
+                
+                // 화면 중앙 X좌표 계산 (반응형 대응)
+                const viewportWidth = window.innerWidth;
+                const centerX = viewportWidth / 2;
+                
+                imgs.forEach(img => {
+                    const rect = img.getBoundingClientRect();
+                    const src = img.getAttribute('src') || img.getAttribute('data-src');
                     
-                    for img in imgs:
-                        src = img.get_attribute("src") or img.get_attribute("data-src")
-                        if src and "http" in src:
-                            # 썸네일/아이콘/로고 등 노이즈 제거
-                            if any(x in src for x in ["blank.gif", "icon", "logo", "rating", "badge"]): continue
-                            
-                            # (중요) 'thumbnail'이 포함되어 있더라도 vendor_inventory 경로는 실제 이미지일 수 있음.
-                            # 하지만 너무 작은 썸네일(60x60 등)은 걸러야 함.
-                            # 일단 다 수집하고 병합 단계에서 눈으로 확인
-                            
-                            if src not in detail_images:
-                                detail_images.append(src)
+                    if(!src) return;
+                    
+                    // 1. 제외 키워드 (광고, 아이콘 등)
+                    if(src.includes('blank.gif') || src.includes('icon') || src.includes('travel') || src.includes('banner')) return;
+                    
+                    // 2. 좌표 필터링 (가장 강력함!)
+                    // - 이미지가 화면 중앙 영역에 걸쳐 있어야 함 (사이드바/배너 제외)
+                    // - rect.left < centerX < rect.right
+                    const isInCenter = (rect.left < centerX && rect.right > centerX);
+                    
+                    // - 너비가 300px 이상 (너무 작은 썸네일 제외)
+                    const isWideEnough = (rect.width > 300 || img.naturalWidth > 300);
+                    
+                    if (isInCenter && isWideEnough) {
+                        if(src.includes('http')) {
+                            results.push(src);
+                        }
+                    }
+                });
+                return results;
+            }""")
 
-            # 비상 대책: 컨테이너에서 못 찾았으면 전체에서 'vendor_inventory' 키워드 검색
-            if not detail_images:
-                print("    ⚠️ 컨테이너 추출 실패. 비상 검색 가동...")
-                all_imgs = page.locator("img").all()
-                for img in all_imgs:
-                    src = img.get_attribute("src") or img.get_attribute("data-src")
-                    if src and "vendor_inventory" in src and src not in detail_images:
-                        detail_images.append(src)
-
-            print(f"\n📊 추출된 조각 이미지: {len(detail_images)}장")
-
-            # ---------------------------------------------------------
-            # [Step 3] 이미지 병합 및 저장
-            # ---------------------------------------------------------
-            if detail_images:
-                merge_images_vertical(detail_images)
+            # 중복 제거
+            candidate_urls = []
+            seen = set()
+            for url in raw_urls:
+                if url.startswith("//"): url = "https:" + url
+                if url not in seen:
+                    candidate_urls.append(url)
+                    seen.add(url)
+            
+            print(f"    🔎 후보군 발견: {len(candidate_urls)}장 (위치/크기 통과)")
+            
+            # 4. 병합
+            if candidate_urls:
+                merge_images_vertical(candidate_urls)
             else:
-                print("❌ 병합할 이미지가 없습니다.")
+                print("❌ 조건에 맞는 이미지를 찾지 못했습니다.")
 
         except Exception as e:
-            print(f"❌ 오류 발생: {e}")
+            print(f"❌ 오류: {e}")
 
 if __name__ == "__main__":
-    test_image_extraction_and_merge()
+    test_v15_smart_scan()
+    

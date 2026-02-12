@@ -3,8 +3,11 @@ import time
 import os
 import subprocess
 import random
-import re # [추가] 정규표현식 사용
+import re
 from playwright.sync_api import sync_playwright
+
+# [NEW] S2B 데이터 보강 모듈 임포트
+from data_enricher import S2B_Enricher 
 
 # ======================================================
 # [설정] 크롤링 타겟 및 운영 정책
@@ -12,8 +15,8 @@ from playwright.sync_api import sync_playwright
 TARGET_URLS = [
     "https://www.coupang.com/vp/products/8610798143?itemId=19665760789&vendorItemId=86771432026&q=%EC%A0%84%EC%9E%90%EB%A0%88%EC%9D%B8%EC%A7%80&searchId=d027098a15810727&sourceType=search&itemsCount=36&searchRank=2&rank=2&traceId=mlg787wn",
     "https://www.coupang.com/vp/products/7249246657?itemId=18436391484&vendorItemId=92006548412&q=%EC%84%A0%ED%92%8D%EA%B8%B0&searchId=c4876bb75295792&sourceType=search&itemsCount=36&searchRank=2&rank=2&traceId=mlg78m1r",
-    "https://www.coupang.com/vp/products/6359373947?itemId=13418949659&vendorItemId=92995378125&q=%EB%85%B8%ED%8A%B8%EB%B6%81&searchId=e154f8483813228&sourceType=search&itemsCount=36&searchRank=2&rank=2&traceId=mlg7936e",
-    # ... 추가 URL
+    "coupang.com/vp/products/8036829511?itemId=23843669090&vendorItemId=90869617914&q=삼성%20노트북&searchId=a93c62df4465418&sourceType=search&itemsCount=36&searchRank=1&rank=1&traceId=mlj3nf0o"
+    # ... 필요한 URL 계속 추가
 ]
 
 OUTPUT_FILE = 's2b_results.json'
@@ -68,17 +71,11 @@ def kill_chrome():
 # [모듈 2] 데이터 정밀 추출기 (Regex & All-Table Scan)
 # ======================================================
 def extract_all_specs(page):
-    """
-    페이지 내의 모든 테이블과 스펙 리스트를 딕셔너리로 통합 추출
-    """
     info_dict = {}
-    
-    # 1. 모든 테이블 스캔 (표 형태 정보)
     try:
         rows = page.locator("table tr").all()
         for row in rows:
             try:
-                # th-td 구조 또는 td-td 구조 모두 대응
                 texts = row.locator("th, td").all_inner_texts()
                 if len(texts) >= 2:
                     key = texts[0].strip()
@@ -88,7 +85,6 @@ def extract_all_specs(page):
             except: continue
     except: pass
 
-    # 2. 상단 스펙 리스트 (ul > li 형태)
     try:
         items = page.locator("ul.prod-description-attribute > li").all_inner_texts()
         for item in items:
@@ -96,134 +92,164 @@ def extract_all_specs(page):
                 parts = item.split(":", 1)
                 info_dict[parts[0].strip()] = parts[1].strip()
     except: pass
-    
     return info_dict
 
 def extract_kc_by_regex(text):
-    """
-    페이지 전체 텍스트에서 KC 인증 번호 패턴을 찾아냄
-    패턴 예: HU07445-11007Z, MSIP-REI-SEC-ECOSOLO, R-R-Kp1-...
-    """
     patterns = [
-        r"[A-Z]{2}[0-9]{4,5}-[0-9]{4,5}[A-Z]?",  # 안전인증 (예: HU07445-11007Z)
-        r"[A-Z]{2,4}-[A-Z]{3}-[A-Z]{3}-[\w]+",   # 전자파 적합성 (예: MSIP-REI-...)
-        r"R-R-[\w]+-[\w]+"                       # 방송통신 (예: R-R-SEC-...)
+        r"[A-Z]{2}[0-9]{4,5}-[0-9]{4,5}[A-Z]?",
+        r"[A-Z]{2,4}-[A-Z]{3}-[A-Z]{3}-[\w]+",
+        r"R-R-[\w]+-[\w]+"
     ]
-    
     found = set()
     for pat in patterns:
         matches = re.findall(pat, text)
         for m in matches:
             found.add(m)
-            
     return " / ".join(list(found))
 
 def get_best_value(info_dict, keywords, default_val=""):
-    """딕셔너리에서 키워드 매칭 (상세설명참조 제외)"""
     for key, val in info_dict.items():
         if any(kw in key for kw in keywords):
-            # '상세설명'이나 '참조'가 들어간 무의미한 값은 무시
             if val and "상세" not in val and "참조" not in val:
                 return val
     return default_val
 
-def crawl_item(page, url):
+# [NEW] 상세 이미지 추출 함수 (버튼 클릭 + 스크롤)
+def get_detail_images_with_scroll(page):
+    print("    📜 [System] 상세 이미지 확보 시작...")
+    
+    # 1. '상품정보 더보기' 버튼 클릭
+    try:
+        more_btns = page.locator("button, a").filter(has_text=re.compile(r"상품정보|더보기|펼치기")).all()
+        clicked = False
+        for btn in more_btns:
+            if btn.is_visible():
+                btn.click(force=True)
+                clicked = True
+                break
+        if clicked:
+            print("    🖱️ '상품정보 더보기' 버튼 클릭 성공")
+            time.sleep(2)
+    except: pass
+
+    # 2. 스크롤 다운 (Lazy Loading 유도)
+    try:
+        page.evaluate("""async () => {
+            await new Promise((resolve) => {
+                let totalHeight = 0;
+                const distance = 300;
+                const timer = setInterval(() => {
+                    const scrollHeight = document.body.scrollHeight;
+                    window.scrollBy(0, distance);
+                    totalHeight += distance;
+                    if(totalHeight >= scrollHeight || totalHeight > 30000){
+                        clearInterval(timer);
+                        resolve();
+                    }
+                }, 100);
+            });
+        }""")
+        time.sleep(2)
+    except: pass
+
+    # 3. 이미지 URL 추출
+    detail_images = []
+    try:
+        # 주요 컨테이너 탐색
+        containers = page.locator("#productDetail, .product-detail-content-border, #vendorInventory").all()
+        if not containers:
+            # 컨테이너를 못 찾으면 바디 전체에서 검색 (차선책)
+            containers = [page.locator("body")]
+
+        for cont in containers:
+            imgs = cont.locator("img").all()
+            for img in imgs:
+                src = img.get_attribute("src") or img.get_attribute("data-src")
+                if src and "http" in src and ".gif" not in src and "blank" not in src:
+                    if src not in detail_images:
+                        detail_images.append(src)
+    except Exception as e:
+        print(f"    ⚠️ 이미지 추출 중 에러: {e}")
+        
+    return detail_images
+
+# ======================================================
+# [핵심] 크롤링 로직 (Phase 1 전용)
+# ======================================================
+def crawl_item(page, url): 
     print(f"▶ 이동: {url[:60]}...")
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=5000)
+        page.goto(url, wait_until="domcontentloaded", timeout=10000)
     except: pass 
 
-    # [1] 기본 정보 (JSON-LD 우선)
     item = {
         "url": url, "name": "N/A", "price": 0, "image": "", 
-        "kc": "상세설명참조", "maker": "협력업체", "origin": "중국", "model": "없음"
+        "kc": "상세설명참조", "maker": "협력업체", "origin": "중국", "model": "",
+        "g2b_code": "", "category": "기타",
+        "detail_images": [] 
     }
 
     try:
-        # 성인인증 페이지 체크
         if "/login/" in page.url:
             print("    ⚠️ 로그인 필요 페이지 -> 건너뜀")
             return None
 
-        json_data = page.locator('script[type="application/ld+json"]').first.inner_text()
-        data = json.loads(json_data)
-        if isinstance(data, list): data = data[0]
-
-        item["name"] = data.get("name", "N/A")
-        item["image"] = data.get("image", "")
-        if isinstance(item["image"], list): item["image"] = item["image"][0]
-
-        offers = data.get("offers", {})
-        if isinstance(offers, list): offers = offers[0]
-        item["price"] = int(offers.get("price", 0))
+        # JSON-LD 파싱
+        try:
+            json_data = page.locator('script[type="application/ld+json"]').first.inner_text()
+            data = json.loads(json_data)
+            if isinstance(data, list): data = data[0]
+            item["name"] = data.get("name", "N/A")
+            item["image"] = data.get("image", "")
+            if isinstance(item["image"], list): item["image"] = item["image"][0]
+            offers = data.get("offers", {})
+            if isinstance(offers, list): offers = offers[0]
+            item["price"] = int(offers.get("price", 0))
+        except: pass
 
         content = page.content()
-        if "무료배송" not in content:
-            item["price"] += 3000
-            print("   - 배송비 3,000원 추가됨")
+        if "무료배송" not in content: item["price"] += 3000
 
-    except Exception as e:
-        print(f"   ⚠️ 기본 파싱 실패: {e}")
-        return None
+        # [NEW] 상세 이미지 추출 실행
+        item["detail_images"] = get_detail_images_with_scroll(page)
+        print(f"    📸 상세 이미지 {len(item['detail_images'])}장 확보")
 
-    # [2] 정밀 스펙 추출 (New Logic)
-    try:
-        # 페이지 전체 텍스트 확보 (Regex용)
+        # 정밀 스펙 추출
         full_text = page.locator("body").inner_text()
-        
-        # 모든 테이블/스펙 정보 딕셔너리화
         all_specs = extract_all_specs(page)
         
-        # 1. KC 인증 (Regex + Table 조합)
-        kc_from_table = get_best_value(all_specs, ["인증", "허가", "신고", "KC"], "")
-        kc_from_regex = extract_kc_by_regex(full_text) # 정규식으로 페이지 전체 스캔
-        
-        # 정규식 결과를 우선하되, 테이블 정보도 병합
-        kc_combined = set()
-        if kc_from_regex: kc_combined.update(kc_from_regex.split(" / "))
-        if kc_from_table: kc_combined.add(kc_from_table)
-        
-        if kc_combined:
-            # '상세설명참조' 같은 쓰레기 데이터 제거
-            clean_kc = [k for k in kc_combined if "상세" not in k and "참조" not in k]
-            if clean_kc: item["kc"] = " / ".join(clean_kc)
-
-        # 2. 제조사 (우선순위: 삼성/LG 등 브랜드 > 협력업체)
-        maker = get_best_value(all_specs, ["제조자", "수입자", "판매업자", "제조사"], "")
-        # 제조사에 '삼성', 'LG' 등이 포함되면 그 값을 살림. 없으면 협력업체.
-        if maker: item["maker"] = maker
-        else:
-            # 텍스트에서 '삼성전자' 같은 브랜드가 보이면 추출 시도 (간단 예시)
-            if "삼성전자" in full_text: item["maker"] = "삼성전자"
-            elif "LG전자" in full_text: item["maker"] = "LG전자"
-
-        # 3. 원산지
-        origin = get_best_value(all_specs, ["제조국", "원산지", "국가"], "")
-        if origin: item["origin"] = origin
-
-        # 4. 모델명 (테이블 > 제목 > Regex)
         model = get_best_value(all_specs, ["모델명", "모델번호", "품명"], "")
         if not model:
-            # 제목에 모델명이 있는 경우가 많음 (예: ... 다이얼식 23L (MS23C...))
-            # 괄호 안의 영문+숫자 패턴 시도
             match = re.search(r"\(([A-Za-z0-9-]{5,})\)", item["name"])
             if match: model = match.group(1)
-        
-        if model: item["model"] = model
+        item["model"] = model
+
+        item["maker"] = get_best_value(all_specs, ["제조자", "수입자", "판매업자", "제조사"], "협력업체")
+        item["origin"] = get_best_value(all_specs, ["제조국", "원산지", "국가"], "중국")
+
+        kc_regex = extract_kc_by_regex(full_text)
+        if kc_regex: item["kc"] = kc_regex
 
     except Exception as e:
-        print(f"   ⚠️ 상세정보 정밀 분석 중 오류: {e}")
+        print(f"   ⚠️ 파싱 에러: {e}")
+        return None
 
-    print(f"   ✅ 수집 완료: {item['name'][:10]}... (모델:{item['model']} / KC:{item['kc'][:15]}...)")
+    print(f"   ✅ 쿠팡 수집 완료: {item['name'][:10]}... | 모델:{item['model']}")
     return item
 
 # ======================================================
-# [실행] 메인 루프
+# [실행] 메인 루프 (Phase 1 & Phase 2)
 # ======================================================
 def run_crawler():
+    # --------------------------------------------------
+    # [PHASE 1] 쿠팡 상품 정보 수집 (Playwright Context 1)
+    # --------------------------------------------------
+    print("\n🚀 [PHASE 1] 쿠팡 상품 정보 수집 시작...")
+    
     urls_to_crawl = TARGET_URLS
     results = []
 
+    # 기존 데이터 로드
     if os.path.exists(OUTPUT_FILE):
         try:
             with open(OUTPUT_FILE, 'r', encoding='utf-8') as f:
@@ -231,19 +257,9 @@ def run_crawler():
                 crawled_urls = set(item['url'] for item in saved_data)
                 urls_to_crawl = [u for u in TARGET_URLS if u not in crawled_urls]
                 results = saved_data
-                if urls_to_crawl:
-                    print(f"📂 기존 데이터 {len(saved_data)}개 확인. 신규 {len(urls_to_crawl)}개 수집 시작.")
         except: pass
 
-    if not urls_to_crawl:
-        print("🎉 모든 URL이 이미 수집되었습니다.")
-        return
-
-    total_count = len(urls_to_crawl)
-    
-    for i in range(0, total_count, RESTART_EVERY_N):
-        chunk = urls_to_crawl[i : i + RESTART_EVERY_N]
-        
+    if urls_to_crawl:
         kill_chrome()
         launch_chrome()
         
@@ -253,26 +269,81 @@ def run_crawler():
                 context = browser.contexts[0]
                 page = context.new_page()
                 
-                for j, url in enumerate(chunk):
-                    global_idx = i + j + 1
+                for i, url in enumerate(urls_to_crawl):
+                    print(f"\n[{i+1}/{len(urls_to_crawl)}] 처리 중...")
+                    data = crawl_item(page, url) 
                     
-                    if global_idx > 1 and (global_idx - 1) % BATCH_SLEEP_EVERY_N == 0:
-                        print(f"\n☕ [Break] {BATCH_SLEEP_EVERY_N}개 수집 완료. {BATCH_SLEEP_DURATION}초 휴식...")
-                        time.sleep(BATCH_SLEEP_DURATION)
-                    
-                    data = crawl_item(page, url)
                     if data:
                         results.append(data)
                         with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
                             json.dump(results, f, ensure_ascii=False, indent=4)
                     
-                    time.sleep(random.uniform(2, 5))
-
+                    time.sleep(random.uniform(2, 4))
             except Exception as e:
-                print(f"❌ 브라우저 연결/실행 중 오류: {e}")
-                continue
+                print(f"❌ Phase 1 에러: {e}")
+            finally:
+                try: context.close()
+                except: pass
+                try: browser.close()
+                except: pass
+        
+        kill_chrome() # 브라우저 완전 종료 (리소스 해제)
+        print("✅ [PHASE 1] 쿠팡 수집 완료. 브라우저 종료됨.\n")
+    else:
+        print("🎉 신규 수집할 URL이 없습니다. Phase 2로 넘어갑니다.\n")
 
-    print(f"\n🎉 전체 작업 완료! 총 {len(results)}개 저장됨: {OUTPUT_FILE}")
+    # --------------------------------------------------
+    # [PHASE 2] S2B 데이터 보강 (Playwright Context 2)
+    # --------------------------------------------------
+    print("🚀 [PHASE 2] S2B 데이터 보강(Enrichment) 시작...")
+    
+    # S2B Enricher 초기화 (새로운 브라우저 세션 시작)
+    enricher = S2B_Enricher() 
+    
+    # 최신 데이터 다시 로드
+    if os.path.exists(OUTPUT_FILE):
+        with open(OUTPUT_FILE, 'r', encoding='utf-8') as f:
+            current_data = json.load(f)
+    else:
+        print("❌ 처리할 데이터 파일이 없습니다.")
+        return
+
+    updated_count = 0
+    for idx, item in enumerate(current_data):
+        # 모델명이 있고 아직 G2B 코드가 없는 경우에만 S2B 검색 시도
+        if item.get("model") and len(item["model"]) > 3 and not item.get("g2b_code"):
+            
+            print(f"🔹 [{idx+1}/{len(current_data)}] S2B 검색: {item['model']}")
+            s2b_data = enricher.fetch_s2b_details(item["model"])
+            
+            if s2b_data:
+                print("    🎉 매칭 성공! 데이터 병합 중...")
+                # S2B 데이터 우선 적용 (Golden Key)
+                if s2b_data["category"]: item["category"] = s2b_data["category"]
+                if s2b_data["manufacturer"]: item["maker"] = s2b_data["manufacturer"]
+                if s2b_data["origin"]: item["origin"] = s2b_data["origin"]
+                if s2b_data["g2b_code"]: item["g2b_code"] = s2b_data["g2b_code"]
+                
+                # KC 정보 병합
+                s2b_kc_strs = [f"{k['category']}:{k['code']}" for k in s2b_data["kc_list"]]
+                if s2b_kc_strs:
+                    current_kc = item["kc"].split(" / ") if item["kc"] != "상세설명참조" else []
+                    combined = list(set(current_kc + s2b_kc_strs))
+                    item["kc"] = " / ".join(combined)
+                
+                updated_count += 1
+            else:
+                print("    ⚠️ 매칭 실패. 기존 데이터 유지.")
+            
+            # 중간 저장 (데이터 보호)
+            with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
+                json.dump(current_data, f, ensure_ascii=False, indent=4)
+            
+            time.sleep(1) # S2B 서버 부하 방지
+        else:
+            print(f"    Pass: 모델명 없음 or 이미 완료됨 ({item.get('name')[:10]}...)")
+
+    print(f"\n🎉 전체 작업 종료! 총 {len(current_data)}개 중 {updated_count}개 보강됨.")
 
 if __name__ == "__main__":
     run_crawler()

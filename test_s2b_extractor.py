@@ -35,8 +35,8 @@ def launch_chrome():
         except: pass
 
 def test_s2b_extraction():
-    print(f">>> [S2B 최종 완성 v4] 모델명: {TEST_MODEL}")
-    print("    👉 전략: 제조사/원산지 정규식(Regex) 추출로 정확도 100% 확보")
+    print(f">>> [S2B Final v8] 모델명: {TEST_MODEL}")
+    print("    👉 전략: 특정 텍스트가 포함된 '행(Row)' 전체를 가져와서 문자열 분해")
     
     launch_chrome()
     
@@ -133,31 +133,59 @@ def test_s2b_extraction():
                     except: continue
                 print(f"    📂 카테고리: {category_path}")
 
-                # 3. 제조사 / 원산지 (정규식 정밀 추출)
+                # 3. 제조사 / 원산지 (Row Text Slicing 방식)
                 manufacturer = "정보없음"
                 origin = "정보없음"
                 
-                # "제조사 / 원산지 :" 뒤에 오는 텍스트를 한 줄 단위로 찾음
-                # 예: 제조사 / 원산지 : 엘지전자 / LG전자 / 중국
-                origin_match = re.search(r"제조사\s*/\s*원산지\s*[:]\s*(.+)", full_text_body)
-                
-                if origin_match:
-                    full_val = origin_match.group(1).strip()
-                    # 슬래시(/)로 구분
-                    parts = [p.strip() for p in full_val.split("/")]
+                try:
+                    # '제조사'와 '원산지'라는 글자가 모두 포함된 요소(td, th, span 등)를 찾음
+                    # 그리고 그 중에서 가장 텍스트 길이가 짧은 것(상위 테이블 제외)을 선택
+                    target_elements = page.get_by_text(re.compile(r"제조사.*원산지")).all()
                     
-                    if len(parts) >= 1:
-                        origin = parts[-1]      # 맨 뒤 = 원산지
-                        manufacturer = parts[0] # 맨 앞 = 제조사
+                    target_text = ""
+                    min_len = 9999
+                    
+                    for el in target_elements:
+                        # 요소의 부모 행(tr) 텍스트를 가져옴
+                        try:
+                            # 현재 요소가 속한 가장 가까운 tr 찾기
+                            row_el = el.locator("xpath=./ancestor::tr[1]")
+                            if row_el.count() > 0:
+                                txt = row_el.inner_text().strip()
+                                # 배송비 등 불필요한 정보가 너무 많이 섞인(길이가 긴) 행은 무시
+                                if len(txt) < 150 and len(txt) < min_len:
+                                    min_len = len(txt)
+                                    target_text = txt
+                        except: continue
+
+                    if target_text:
+                        # 텍스트 예시: "제조사 / 원산지 : 삼성전자 / SAMSUNG / 말레이시아"
+                        # 1. 콜론(:)으로 라벨과 값 분리
+                        if ":" in target_text:
+                            value_part = target_text.split(":", 1)[1].strip()
+                        else:
+                            # 콜론이 없으면 라벨 제거
+                            value_part = target_text.replace("제조사", "").replace("원산지", "").replace("/", "", 1).strip()
                         
-                        # 값이 3개 이상이면(제조사/브랜드/원산지) 괄호로 병기
-                        if len(parts) >= 3:
-                            manufacturer = f"{parts[0]} ({parts[1]})"
+                        # 2. 슬래시(/)로 값 분리
+                        # "삼성전자 / SAMSUNG / 말레이시아" -> ["삼성전자", "SAMSUNG", "말레이시아"]
+                        parts = [p.strip() for p in value_part.split("/") if p.strip()]
+                        
+                        if len(parts) >= 1:
+                            origin = parts[-1]      # 맨 뒤는 항상 원산지
+                            manufacturer = parts[0] # 맨 앞은 항상 제조사
+                            
+                            # 중간에 영문명 등이 있으면 괄호로 병기
+                            if len(parts) >= 3:
+                                manufacturer = f"{parts[0]} ({parts[1]})"
+
+                except Exception as e:
+                    print(f"    ⚠️ 파싱 오류: {e}")
 
                 print(f"    🏭 제조사: {manufacturer}")
                 print(f"    🌏 원산지: {origin}")
                 
-                # 4. KC 인증번호 (기존 로직 유지)
+                # 4. KC 인증번호
                 found_kc_list = []
                 all_rows = page.locator("tr").all()
                 for row in all_rows:
